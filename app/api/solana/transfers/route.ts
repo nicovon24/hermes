@@ -1,4 +1,4 @@
-import { transferSplToken } from "@/src/lib/solana";
+import { transferSplToken } from "@/lib/solana";
 
 export async function POST(request: Request) {
   try {

@@ -1,4 +1,4 @@
-import { settleFromSolana } from "@/src/lib/settlement";
+import { settleFromSolana } from "@/lib/settlement";
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {

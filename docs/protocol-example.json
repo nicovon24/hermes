@@ -1,0 +1,38 @@
+{
+  "messageId": "087ef21d-5dc0-465b-b7fa-ddb64a51480c",
+  "protocolVersion": "1.0",
+  "type": "offer",
+  "senderCompanyId": "ac5d5c38-7341-4622-8a36-b77d4a614cb2",
+  "recipientCompanyId": "ccbcff4b-5e09-4794-93af-c1bec389d25c",
+  "purchaseRequestId": "1dc4264f-f160-44fe-85df-09c5dbd31d85",
+  "negotiationId": "808244eb-88a6-4d3c-86ca-1ef47a8077f4",
+  "correlationId": null,
+  "sentAt": "2026-09-11T14:05:00.000Z",
+  "expiresAt": "2026-09-12T18:00:00.000Z",
+  "idempotencyKey": "erp-supplier-01:offer:000184",
+  "payload": {
+    "offerId": "72c3c3ff-92d2-44c6-9a1c-b55a59a024f2",
+    "currency": "ARS",
+    "quotedAt": "2026-09-11T14:05:00.000Z",
+    "validUntil": "2026-09-12T18:00:00.000Z",
+    "lines": [
+      {
+        "productId": "PRODUCTO-X",
+        "description": "Producto X",
+        "unit": "unit",
+        "quantity": "500",
+        "unitPrice": "2000.00",
+        "lineTotal": "1000000.00"
+      }
+    ],
+    "subtotal": "1000000.00",
+    "taxes": "210000.00",
+    "shipping": "0.00",
+    "discount": "10000.00",
+    "total": "1200000.00",
+    "confirmedStock": true,
+    "deliveryDate": "2026-09-18",
+    "paymentTerms": "PREPAID",
+    "notes": null
+  }
+}

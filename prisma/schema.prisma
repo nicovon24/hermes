@@ -8,68 +8,403 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model AgentRun {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId         String          @map("company_id") @db.Uuid
+  purchaseRequestId String          @map("purchase_request_id") @db.Uuid
+  kind              String
+  provider          String
+  model             String
+  inputSnapshot     Json            @map("input_snapshot")
+  output            Json
+  status            String
+  createdBy         String          @map("created_by")
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  company           Company         @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseRequest   PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("agent_runs")
+}
+
 model Agent {
-  id           String    @id
-  organization String
-  role         String
-  wallet       String?
-  createdAt    DateTime  @default(now()) @map("created_at")
+  id            String    @id(map: "Agent_pkey")
+  organization  String
+  role          String
+  wallet        String?
+  createdAt     DateTime  @default(now()) @map("created_at")
   payerPayments Payment[] @relation("Payer")
   payeePayments Payment[] @relation("Payee")
 
   @@map("agents")
 }
 
-model Payment {
-  id                String        @id @default(cuid())
-  conversationId    String @map("conversation_id")
-  payerAgentId      String @map("payer_agent_id")
-  payeeAgentId      String @map("payee_agent_id")
-  payerWallet       String @map("payer_wallet")
-  payeeWallet       String @map("payee_wallet")
-  chainId           Int    @map("chain_id")
-  tokenAddress      String @map("token_address")
-  tokenSymbol       String @default("ARGt") @map("token_symbol")
-  amountBaseUnits   String @map("amount_base_units")
-  gasUsedWei        String? @map("gas_used_wei")
-  effectiveGasPriceWei String? @map("effective_gas_price_wei")
-  gasFeeWei         String? @map("gas_fee_wei")
-  gasFeeEth         String? @map("gas_fee_eth")
-  status            PaymentStatus @default(PAYMENT_REQUESTED)
-  txHash            String?       @unique @map("tx_hash")
-  externalReference String? @map("external_reference")
-  createdAt         DateTime      @default(now()) @map("created_at")
-  updatedAt         DateTime      @updatedAt @map("updated_at")
-  payer             Agent         @relation("Payer", fields: [payerAgentId], references: [id])
-  payee             Agent         @relation("Payee", fields: [payeeAgentId], references: [id])
-  events            PaymentEvent[]
+model ApiCredential {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId  String    @map("company_id") @db.Uuid
+  label      String
+  keyPrefix  String    @map("key_prefix")
+  secretHash String    @unique @map("secret_hash")
+  scopes     String[]  @default([])
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@map("payments")
-  @@index([conversationId])
-  @@index([payerAgentId])
-  @@index([payeeAgentId])
+  @@map("api_credentials")
+}
+
+model AuditLog {
+  id            BigInt   @id @default(autoincrement())
+  companyId     String?  @map("company_id") @db.Uuid
+  actorType     String   @map("actor_type")
+  actorId       String   @map("actor_id")
+  action        String
+  aggregateType String   @map("aggregate_type")
+  aggregateId   String   @map("aggregate_id") @db.Uuid
+  metadata      Json     @default("{}")
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  company       Company? @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("audit_log")
+}
+
+model Company {
+  id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug                 String               @unique
+  legalName            String               @map("legal_name")
+  kind                 String
+  createdAt            DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  agentRuns            AgentRun[]
+  apiCredentials       ApiCredential[]
+  auditLogs            AuditLog[]
+  objective            CompanyObjective?
+  profile              CompanyProfile?
+  contextEvents        ContextEvent[]
+  contextSources       ContextSource[]
+  inventorySnapshots   InventorySnapshot[]
+  mandates             Mandate[]
+  receivedMessages     NegotiationMessage[] @relation("MessageRecipient")
+  sentMessages         NegotiationMessage[] @relation("MessageSender")
+  negotiationMetrics   NegotiationMetric[]
+  buyerNegotiations    Negotiation[]        @relation("NegotiationBuyer")
+  supplierNegotiations Negotiation[]        @relation("NegotiationSupplier")
+  offers               Offer[]
+  products             Product[]
+  buyerOrders          PurchaseOrder[]      @relation("OrderBuyer")
+  supplierOrders       PurchaseOrder[]      @relation("OrderSupplier")
+  purchaseRequests     PurchaseRequest[]
+  sales                SalesEvent[]         @relation("SalesCompany")
+  purchases            SalesEvent[]         @relation("SalesCustomer")
+
+  @@map("companies")
+}
+
+model CompanyObjective {
+  companyId              String   @id @map("company_id") @db.Uuid
+  targetStockCapital     Decimal? @map("target_stock_capital") @db.Decimal(20, 2)
+  targetDaysOfStock      Int?     @map("target_days_of_stock")
+  targetMarginPercentage Decimal? @map("target_margin_percentage") @db.Decimal(8, 3)
+  targetRotationDays     Int?     @map("target_rotation_days")
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  company                Company  @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("company_objectives")
+}
+
+model CompanyProfile {
+  companyId    String   @id @map("company_id") @db.Uuid
+  taxId        String   @map("tax_id")
+  addressLine  String   @map("address_line")
+  city         String
+  province     String
+  contactName  String   @map("contact_name")
+  contactEmail String   @map("contact_email")
+  contactPhone String   @map("contact_phone")
+  deliveryArea String   @map("delivery_area")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("company_profiles")
+}
+
+model ContextEvent {
+  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId   String        @map("company_id") @db.Uuid
+  eventType   String        @map("event_type")
+  aggregateId String        @map("aggregate_id") @db.Uuid
+  sourceId    String        @map("source_id") @db.Uuid
+  payload     Json
+  occurredAt  DateTime      @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  company     Company       @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  source      ContextSource @relation(fields: [sourceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([companyId, occurredAt(sort: Desc)], map: "context_events_company_idx")
+  @@map("context_events")
+}
+
+model ContextSource {
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId          String              @map("company_id") @db.Uuid
+  kind               String
+  externalId         String              @map("external_id")
+  lastVersion        String              @map("last_version")
+  lastObservedAt     DateTime            @map("last_observed_at") @db.Timestamptz(6)
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  events             ContextEvent[]
+  inventorySnapshots InventorySnapshot[]
+  sales              SalesEvent[]
+
+  @@unique([companyId, externalId])
+  @@map("context_sources")
+}
+
+model DomainEvent {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  aggregateType String   @map("aggregate_type")
+  aggregateId   String   @map("aggregate_id") @db.Uuid
+  eventType     String   @map("event_type")
+  payload       Json
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  @@index([aggregateType, aggregateId, occurredAt], map: "domain_events_aggregate_idx")
+  @@map("domain_events")
+}
+
+model InventorySnapshot {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId     String        @map("company_id") @db.Uuid
+  sourceId      String        @map("source_id") @db.Uuid
+  productId     String        @map("product_id") @db.Uuid
+  sourceVersion String        @map("source_version")
+  onHand        Decimal       @map("on_hand") @db.Decimal(24, 6)
+  reserved      Decimal       @db.Decimal(24, 6)
+  inTransit     Decimal       @map("in_transit") @db.Decimal(24, 6)
+  observedAt    DateTime      @map("observed_at") @db.Timestamptz(6)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product       Product       @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  source        ContextSource @relation(fields: [sourceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([sourceId, productId, sourceVersion])
+  @@index([companyId, observedAt(sort: Desc)], map: "inventory_company_observed_idx")
+  @@index([productId, observedAt(sort: Desc)], map: "inventory_product_observed_idx")
+  @@map("inventory_snapshots")
+}
+
+model Mandate {
+  id                        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseRequestId         String          @map("purchase_request_id") @db.Uuid
+  buyerCompanyId            String          @map("buyer_company_id") @db.Uuid
+  approvedBy                String          @map("approved_by")
+  version                   Int
+  currency                  String
+  maximumTotalIncludingFees Decimal         @map("maximum_total_including_fees") @db.Decimal(20, 2)
+  allowedSuppliers          String[]        @map("allowed_suppliers") @db.Uuid
+  paymentTerms              String          @map("payment_terms")
+  settlementAsset           String          @map("settlement_asset")
+  autoAccept                Boolean         @default(false) @map("auto_accept")
+  autoPay                   Boolean         @default(false) @map("auto_pay")
+  status                    String          @default("ACTIVE")
+  approvedAt                DateTime        @default(now()) @map("approved_at") @db.Timestamptz(6)
+  expiresAt                 DateTime        @map("expires_at") @db.Timestamptz(6)
+  buyer                     Company         @relation(fields: [buyerCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseRequest           PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([purchaseRequestId, version])
+  @@map("mandates")
+}
+
+model NegotiationMessage {
+  id                 String          @id @db.Uuid
+  negotiationId      String          @map("negotiation_id") @db.Uuid
+  purchaseRequestId  String          @map("purchase_request_id") @db.Uuid
+  protocolVersion    String          @map("protocol_version")
+  messageType        String          @map("message_type")
+  senderCompanyId    String          @map("sender_company_id") @db.Uuid
+  recipientCompanyId String          @map("recipient_company_id") @db.Uuid
+  correlationId      String?         @map("correlation_id") @db.Uuid
+  sentAt             DateTime        @map("sent_at") @db.Timestamptz(6)
+  expiresAt          DateTime?       @map("expires_at") @db.Timestamptz(6)
+  idempotencyKey     String          @map("idempotency_key")
+  payload            Json
+  rawMessage         Json            @map("raw_message")
+  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenderRoundId      String?         @map("tender_round_id") @db.Uuid
+  negotiation        Negotiation     @relation(fields: [negotiationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  purchaseRequest    PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recipient          Company         @relation("MessageRecipient", fields: [recipientCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sender             Company         @relation("MessageSender", fields: [senderCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenderRound        TenderRound?    @relation(fields: [tenderRoundId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  offer              Offer?
+
+  @@unique([senderCompanyId, idempotencyKey])
+  @@index([negotiationId, sentAt, createdAt], map: "messages_negotiation_sent_idx")
+  @@map("negotiation_messages")
+}
+
+model NegotiationMetric {
+  id                        String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  negotiationId             String          @unique @map("negotiation_id") @db.Uuid
+  purchaseRequestId         String          @map("purchase_request_id") @db.Uuid
+  supplierCompanyId         String          @map("supplier_company_id") @db.Uuid
+  rounds                    Int
+  messageCount              Int             @map("message_count")
+  initialTotal              Decimal         @map("initial_total") @db.Decimal(20, 2)
+  finalTotal                Decimal         @map("final_total") @db.Decimal(20, 2)
+  priceReductionPercentage  Decimal         @map("price_reduction_percentage") @db.Decimal(8, 3)
+  estimatedMarginPercentage Decimal         @map("estimated_margin_percentage") @db.Decimal(8, 3)
+  capitalEfficiencyScore    Decimal         @map("capital_efficiency_score") @db.Decimal(8, 3)
+  stockAvailable            Decimal         @map("stock_available") @db.Decimal(24, 6)
+  durationMs                Int             @map("duration_ms")
+  recordedAt                DateTime        @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  negotiation               Negotiation     @relation(fields: [negotiationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  purchaseRequest           PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  supplier                  Company         @relation(fields: [supplierCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([purchaseRequestId, recordedAt(sort: Desc)], map: "negotiation_metrics_request_idx")
+  @@map("negotiation_metrics")
+}
+
+model Negotiation {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseRequestId String               @map("purchase_request_id") @db.Uuid
+  buyerCompanyId    String               @map("buyer_company_id") @db.Uuid
+  supplierCompanyId String               @map("supplier_company_id") @db.Uuid
+  status            String               @default("OPEN")
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime             @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  messages          NegotiationMessage[]
+  metric            NegotiationMetric?
+  buyer             Company              @relation("NegotiationBuyer", fields: [buyerCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseRequest   PurchaseRequest      @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  supplier          Company              @relation("NegotiationSupplier", fields: [supplierCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  offers            Offer[]
+
+  @@unique([purchaseRequestId, supplierCompanyId])
+  @@index([purchaseRequestId], map: "negotiations_request_idx")
+  @@index([supplierCompanyId, status], map: "negotiations_supplier_idx")
+  @@map("negotiations")
+}
+
+model OfferLine {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  offerId           String              @map("offer_id") @db.Uuid
+  purchaseRequestId String              @map("purchase_request_id") @db.Uuid
+  requestItemId     String              @map("request_item_id") @db.Uuid
+  productId         String              @map("product_id")
+  description       String
+  unit              String
+  quantity          Decimal             @db.Decimal(24, 6)
+  unitPrice         Decimal             @map("unit_price") @db.Decimal(20, 2)
+  subtotal          Decimal             @db.Decimal(20, 2)
+  taxes             Decimal             @db.Decimal(20, 2)
+  shipping          Decimal             @db.Decimal(20, 2)
+  total             Decimal             @db.Decimal(20, 2)
+  confirmedStock    Boolean             @map("confirmed_stock")
+  deliveryDate      DateTime            @map("delivery_date") @db.Date
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  offer             Offer               @relation(fields: [offerId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  purchaseRequest   PurchaseRequest     @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  requestItem       PurchaseRequestItem @relation(fields: [requestItemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  purchaseOrderItem PurchaseOrderItem?
+
+  @@unique([offerId, requestItemId])
+  @@index([purchaseRequestId, requestItemId, total], map: "offer_lines_request_idx")
+  @@map("offer_lines")
+}
+
+model Offer {
+  id                String             @id @db.Uuid
+  negotiationId     String             @map("negotiation_id") @db.Uuid
+  purchaseRequestId String             @map("purchase_request_id") @db.Uuid
+  supplierCompanyId String             @map("supplier_company_id") @db.Uuid
+  messageId         String             @unique @map("message_id") @db.Uuid
+  status            String             @default("ACTIVE")
+  currency          String
+  validUntil        DateTime           @map("valid_until") @db.Timestamptz(6)
+  subtotal          Decimal            @db.Decimal(20, 2)
+  taxes             Decimal            @db.Decimal(20, 2)
+  shipping          Decimal            @db.Decimal(20, 2)
+  discount          Decimal            @db.Decimal(20, 2)
+  total             Decimal            @db.Decimal(20, 2)
+  deliveryDate      DateTime           @map("delivery_date") @db.Date
+  paymentTerms      String             @map("payment_terms")
+  confirmedStock    Boolean            @map("confirmed_stock")
+  payload           Json
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  tenderRoundId     String?            @map("tender_round_id") @db.Uuid
+  lines             OfferLine[]
+  message           NegotiationMessage @relation(fields: [messageId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  negotiation       Negotiation        @relation(fields: [negotiationId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  purchaseRequest   PurchaseRequest    @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  supplier          Company            @relation(fields: [supplierCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenderRound       TenderRound?       @relation(fields: [tenderRoundId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseOrders    PurchaseOrder[]
+
+  @@index([purchaseRequestId, status, validUntil], map: "offers_request_active_idx")
+  @@map("offers")
 }
 
 model PaymentEvent {
-  id           String   @id @default(cuid())
-  paymentId   String @map("payment_id")
-  type         String
-  chainId      Int? @map("chain_id")
-  tokenAddress String? @map("token_address")
-  tokenSymbol String? @map("token_symbol")
-  amountBaseUnits String? @map("amount_base_units")
-  gasUsedWei String? @map("gas_used_wei")
-  effectiveGasPriceWei String? @map("effective_gas_price_wei")
-  gasFeeWei String? @map("gas_fee_wei")
-  gasFeeEth String? @map("gas_fee_eth")
-  data         Json
-  previousHash String? @map("previous_hash")
-  hash         String
-  createdAt    DateTime @default(now()) @map("created_at")
-  payment      Payment  @relation(fields: [paymentId], references: [id])
+  id                   String   @id(map: "PaymentEvent_pkey") @default(cuid())
+  paymentId            String   @map("payment_id")
+  type                 String
+  data                 Json
+  previousHash         String?  @map("previous_hash")
+  hash                 String
+  createdAt            DateTime @default(now()) @map("created_at")
+  gasUsedWei           String?  @map("gas_used_wei")
+  effectiveGasPriceWei String?  @map("effective_gas_price_wei")
+  gasFeeWei            String?  @map("gas_fee_wei")
+  gasFeeEth            String?  @map("gas_fee_eth")
+  chainId              Int?     @map("chain_id")
+  tokenAddress         String?  @map("token_address")
+  amountBaseUnits      String?  @map("amount_base_units")
+  tokenSymbol          String?  @map("token_symbol")
+  payment              Payment  @relation(fields: [paymentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "PaymentEvent_paymentId_fkey")
 
+  @@index([paymentId], map: "payment_events_payment_id_idx")
   @@map("payment_events")
-  @@index([paymentId])
+}
+
+model Payment {
+  id                   String         @id(map: "Payment_pkey") @default(cuid())
+  conversationId       String         @map("conversation_id")
+  purchaseOrderId      String?        @unique(map: "payments_purchase_order_id_key") @map("purchase_order_id") @db.Uuid
+  payerAgentId         String         @map("payer_agent_id")
+  payeeAgentId         String         @map("payee_agent_id")
+  payerWallet          String         @map("payer_wallet")
+  payeeWallet          String         @map("payee_wallet")
+  chainId              Int            @map("chain_id")
+  tokenAddress         String         @map("token_address")
+  tokenSymbol          String         @default("ARGt") @map("token_symbol")
+  amountBaseUnits      String         @map("amount_base_units")
+  status               PaymentStatus  @default(PAYMENT_REQUESTED)
+  txHash               String?        @unique(map: "Payment_txHash_key") @map("tx_hash")
+  externalReference    String?        @unique(map: "payments_external_reference_key") @map("external_reference")
+  attemptCount         Int            @default(0) @map("attempt_count")
+  lastError            String?        @map("last_error")
+  submittedAt          DateTime?      @map("submitted_at") @db.Timestamp(6)
+  confirmedAt          DateTime?      @map("confirmed_at") @db.Timestamp(6)
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+  gasUsedWei           String?        @map("gas_used_wei")
+  effectiveGasPriceWei String?        @map("effective_gas_price_wei")
+  gasFeeWei            String?        @map("gas_fee_wei")
+  gasFeeEth            String?        @map("gas_fee_eth")
+  payer                Agent          @relation("Payer", fields: [payerAgentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "Payment_payerAgentId_fkey")
+  payee                Agent          @relation("Payee", fields: [payeeAgentId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "Payment_payeeAgentId_fkey")
+  purchaseOrder        PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  events               PaymentEvent[]
+
+  @@index([conversationId], map: "payments_conversation_id_idx")
+  @@index([payerAgentId], map: "payments_payer_agent_id_idx")
+  @@index([payeeAgentId], map: "payments_payee_agent_id_idx")
+  @@index([status], map: "payments_status_idx")
+  @@map("payments")
 }
 
 model Quote {
@@ -88,13 +423,173 @@ model Quote {
   gasFee             String      @map("gas_fee")
   hermesFee          String      @map("hermes_fee")
   status             QuoteStatus @default(QUOTE_CREATED)
-  expiresAt          DateTime    @map("expires_at")
-  createdAt          DateTime    @default(now()) @map("created_at")
-  updatedAt          DateTime    @updatedAt @map("updated_at")
+  expiresAt          DateTime    @map("expires_at") @db.Timestamptz(6)
+  createdAt          DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@map("quotes")
   @@index([status])
   @@index([expiresAt])
+  @@map("quotes")
+}
+
+model Product {
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId          String              @map("company_id") @db.Uuid
+  externalId         String              @map("external_id")
+  name               String
+  unit               String
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  unitCost           Decimal             @default(0) @map("unit_cost") @db.Decimal(20, 2)
+  inventorySnapshots InventorySnapshot[]
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sales              SalesEvent[]
+
+  @@unique([companyId, externalId])
+  @@map("products")
+}
+
+model PurchaseOrderItem {
+  id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseOrderId String              @map("purchase_order_id") @db.Uuid
+  requestItemId   String              @unique @map("request_item_id") @db.Uuid
+  offerLineId     String              @unique @map("offer_line_id") @db.Uuid
+  productId       String              @map("product_id")
+  description     String
+  unit            String
+  quantity        Decimal             @db.Decimal(24, 6)
+  unitPrice       Decimal             @map("unit_price") @db.Decimal(20, 2)
+  subtotal        Decimal             @db.Decimal(20, 2)
+  taxes           Decimal             @db.Decimal(20, 2)
+  shipping        Decimal             @db.Decimal(20, 2)
+  total           Decimal             @db.Decimal(20, 2)
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  offerLine       OfferLine           @relation(fields: [offerLineId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  purchaseOrder   PurchaseOrder       @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  requestItem     PurchaseRequestItem @relation(fields: [requestItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@map("purchase_order_items")
+}
+
+model PurchaseOrder {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseRequestId String              @map("purchase_request_id") @db.Uuid
+  tenderRoundId     String              @map("tender_round_id") @db.Uuid
+  buyerCompanyId    String              @map("buyer_company_id") @db.Uuid
+  supplierCompanyId String              @map("supplier_company_id") @db.Uuid
+  offerId           String              @map("offer_id") @db.Uuid
+  status            String              @default("CREATED")
+  currency          String              @default("ARS")
+  subtotal          Decimal             @default(0) @db.Decimal(20, 2)
+  taxes             Decimal             @default(0) @db.Decimal(20, 2)
+  shipping          Decimal             @default(0) @db.Decimal(20, 2)
+  total             Decimal             @default(0) @db.Decimal(20, 2)
+  deliveryDate      DateTime            @map("delivery_date") @db.Date
+  paymentTerms      String              @map("payment_terms")
+  externalReference String              @unique @map("external_reference")
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  items             PurchaseOrderItem[]
+  buyer             Company             @relation("OrderBuyer", fields: [buyerCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  offer             Offer               @relation(fields: [offerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseRequest   PurchaseRequest     @relation(fields: [purchaseRequestId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  supplier          Company             @relation("OrderSupplier", fields: [supplierCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenderRound       TenderRound         @relation(fields: [tenderRoundId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  payment           Payment?
+
+  @@unique([tenderRoundId, supplierCompanyId])
+  @@index([buyerCompanyId, createdAt(sort: Desc)], map: "purchase_orders_buyer_idx")
+  @@index([supplierCompanyId, createdAt(sort: Desc)], map: "purchase_orders_supplier_idx")
+  @@map("purchase_orders")
+}
+
+model PurchaseRequestItem {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseRequestId String             @map("purchase_request_id") @db.Uuid
+  productId         String             @map("product_id")
+  description       String
+  unit              String
+  minimumQuantity   Decimal            @map("minimum_quantity") @db.Decimal(24, 6)
+  targetQuantity    Decimal            @map("target_quantity") @db.Decimal(24, 6)
+  maximumQuantity   Decimal            @map("maximum_quantity") @db.Decimal(24, 6)
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  status            String             @default("PENDING")
+  pendingReason     String?            @map("pending_reason")
+  urgencyScore      Decimal            @default(999999) @map("urgency_score") @db.Decimal(20, 6)
+  awardedAt         DateTime?          @map("awarded_at") @db.Timestamptz(6)
+  offerLines        OfferLine[]
+  purchaseOrderItem PurchaseOrderItem?
+  purchaseRequest   PurchaseRequest    @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("purchase_request_items")
+}
+
+model PurchaseRequest {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  buyerCompanyId String                @map("buyer_company_id") @db.Uuid
+  status         String                @default("AWAITING_APPROVAL")
+  currency       String
+  requiredBy     DateTime              @map("required_by") @db.Date
+  expiresAt      DateTime              @map("expires_at") @db.Timestamptz(6)
+  createdBy      String                @map("created_by")
+  version        Int                   @default(1)
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime              @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  agentRuns      AgentRun[]
+  mandates       Mandate[]
+  messages       NegotiationMessage[]
+  metrics        NegotiationMetric[]
+  negotiations   Negotiation[]
+  offerLines     OfferLine[]
+  offers         Offer[]
+  purchaseOrders PurchaseOrder[]
+  items          PurchaseRequestItem[]
+  buyer          Company               @relation(fields: [buyerCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenderRounds   TenderRound[]
+
+  @@index([buyerCompanyId, status, createdAt(sort: Desc)], map: "purchase_requests_buyer_status_idx")
+  @@map("purchase_requests")
+}
+
+model SalesEvent {
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId         String        @map("company_id") @db.Uuid
+  sourceId          String        @map("source_id") @db.Uuid
+  productId         String        @map("product_id") @db.Uuid
+  externalEventId   String        @map("external_event_id")
+  sourceVersion     String        @map("source_version")
+  quantity          Decimal       @db.Decimal(24, 6)
+  unitPrice         Decimal       @map("unit_price") @db.Decimal(20, 2)
+  soldAt            DateTime      @map("sold_at") @db.Timestamptz(6)
+  observedAt        DateTime      @map("observed_at") @db.Timestamptz(6)
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  customerCompanyId String?       @map("customer_company_id") @db.Uuid
+  company           Company       @relation("SalesCompany", fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  customer          Company?      @relation("SalesCustomer", fields: [customerCompanyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  product           Product       @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  source            ContextSource @relation(fields: [sourceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([sourceId, externalEventId])
+  @@index([companyId, customerCompanyId, soldAt(sort: Desc)], map: "sales_company_customer_sold_idx")
+  @@index([companyId, soldAt(sort: Desc)], map: "sales_company_sold_idx")
+  @@index([productId, soldAt(sort: Desc)], map: "sales_product_sold_idx")
+  @@map("sales_events")
+}
+
+model TenderRound {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  purchaseRequestId String               @map("purchase_request_id") @db.Uuid
+  roundNumber       Int                  @map("round_number")
+  status            String               @default("OPEN")
+  requestItemIds    String[]             @map("request_item_ids") @db.Uuid
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt       DateTime?            @map("completed_at") @db.Timestamptz(6)
+  messages          NegotiationMessage[]
+  offers            Offer[]
+  purchaseOrders    PurchaseOrder[]
+  purchaseRequest   PurchaseRequest      @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([purchaseRequestId, roundNumber])
+  @@map("tender_rounds")
 }
 
 enum PaymentStatus {
@@ -103,11 +598,6 @@ enum PaymentStatus {
   PAYMENT_SUBMITTED
   PAYMENT_CONFIRMED
   PAYMENT_FAILED
-  SOURCE_PAYMENT_PENDING
-  SOURCE_PAYMENT_CONFIRMED
-  DESTINATION_PAYMENT_SUBMITTED
-  DESTINATION_PAYMENT_CONFIRMED
-  SETTLED
 
   @@map("payment_status")
 }

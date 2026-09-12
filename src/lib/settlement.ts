@@ -1,6 +1,6 @@
 import { Connection } from "@solana/web3.js";
-import { prisma } from "@/src/lib/prisma";
-import { ARGt, argtAbi, agentWalletClient } from "@/src/lib/chain";
+import { prisma } from "@/lib/prisma";
+import { ARGt, argtAbi, agentWalletClient } from "@/lib/chain";
 
 export async function settleFromSolana(paymentId: string, sourceSignature: string) {
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });

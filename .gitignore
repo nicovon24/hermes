@@ -1,6 +1,9 @@
-__pycache__/
-.venv/
-.env
-*.pyc
 node_modules/
 .next/
+.env
+.env.local
+.env.*.local
+coverage/
+*.tsbuildinfo
+.DS_Store
+supabase/.temp/
