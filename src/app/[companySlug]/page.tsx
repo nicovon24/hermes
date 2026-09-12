@@ -6,8 +6,14 @@ import { ContextModal } from "@/components/context-modal";
 import { ConversationModal } from "@/components/conversation-modal";
 import { RetryPendingButton } from "@/components/retry-pending-button";
 import { PaymentReviewForm } from "@/components/payment-review-form";
-import { getBuyerCompanyId } from "@/lib/demo-workspace";
+import { PayOrderButton } from "@/components/pay-order-button";
+import {
+  DEMO_BUYER_PRODUCT_CONTEXTS,
+  DEMO_COMPANIES,
+  getBuyerCompanyId,
+} from "@/lib/demo-workspace";
 import { centsToMoney, formatArs, moneyToCents } from "@/lib/decimal";
+import { paymentEnvironmentAvailable } from "@/lib/env";
 import { prisma } from "@/lib/prisma";
 import { argtBaseUnitsToDisplay } from "@/modules/payments/domain";
 import { getBuyerProductContexts } from "@/modules/context/analytics";
@@ -210,20 +216,48 @@ function MessageCard({
 
 export default async function AccountPage({ params }: AccountPageProps) {
   const { companySlug } = await params;
-  const companyRow = await prisma.company.findUnique({ where: { slug: companySlug } });
+  const companyRow = DEMO_COMPANIES.find((candidate) => candidate.slug === companySlug);
   if (!companyRow) notFound();
   const company = { id: companyRow.id, slug: companyRow.slug, legal_name: companyRow.legalName, kind: companyRow.kind };
 
   const isBuyer = company.kind === "BUYER";
+  if (isBuyer) {
+    const storefrontDraft = buildConsolidatedPurchaseDraft(
+      DEMO_BUYER_PRODUCT_CONTEXTS,
+    );
+
+    return (
+      <main className="shell company-workspace">
+        <BuyerOrderWorkspace
+          companyId={company.id}
+          directOrder
+          draft={storefrontDraft}
+        />
+      </main>
+    );
+  }
+
+  const paymentAvailable = paymentEnvironmentAvailable();
   const buyerCompanyId = getBuyerCompanyId();
-  const [profileRow, inventoryRows, objectiveRow, negotiationRows, orderRows, ownRunRows, companyRows] = await Promise.all([
+  const [profileRow, inventoryRows, objectiveRow, negotiationRows, orderRows, ownRunRows, requestRows, messageRows, buyerContexts] = await Promise.all([
     prisma.companyProfile.findUnique({ where: { companyId: company.id } }),
-    prisma.inventorySnapshot.findMany({ where: { companyId: company.id }, orderBy: { observedAt: "desc" }, include: { product: true } }),
+    prisma.inventorySnapshot.findMany({ where: { companyId: company.id }, orderBy: { observedAt: "desc" }, distinct: ["productId"], include: { product: true } }),
     prisma.companyObjective.findUnique({ where: { companyId: company.id } }),
-    prisma.negotiation.findMany({ where: isBuyer ? { buyerCompanyId: company.id } : { supplierCompanyId: company.id }, orderBy: { createdAt: "desc" } }),
-    prisma.purchaseOrder.findMany({ where: isBuyer ? { buyerCompanyId: company.id } : { supplierCompanyId: company.id }, orderBy: { createdAt: "desc" }, include: { items: true, payment: true } }),
+    prisma.negotiation.findMany({ where: isBuyer ? { buyerCompanyId: company.id } : { supplierCompanyId: company.id }, orderBy: { createdAt: "desc" }, take: 90 }),
+    prisma.purchaseOrder.findMany({ where: isBuyer ? { buyerCompanyId: company.id } : { supplierCompanyId: company.id }, orderBy: { createdAt: "desc" }, take: 30, include: { items: true, payment: true } }),
     prisma.agentRun.findMany({ where: { companyId: company.id }, orderBy: { createdAt: "desc" }, take: 30 }),
-    prisma.company.findMany(),
+    prisma.purchaseRequest.findMany({
+      where: isBuyer ? { buyerCompanyId: company.id } : { negotiations: { some: { supplierCompanyId: company.id } } },
+      orderBy: { createdAt: "desc" },
+      take: 30,
+      include: { items: true },
+    }),
+    prisma.negotiationMessage.findMany({
+      where: { negotiation: isBuyer ? { buyerCompanyId: company.id } : { supplierCompanyId: company.id } },
+      orderBy: { sentAt: "desc" },
+      take: 300,
+    }),
+    isBuyer ? getBuyerProductContexts(company.id) : Promise.resolve([]),
   ]);
 
   const allInventory: InventoryRow[] = inventoryRows.map((row) => ({
@@ -239,16 +273,6 @@ export default async function AccountPage({ params }: AccountPageProps) {
       rows.findIndex((candidate) => candidate.products?.external_id === row.products?.external_id) === index,
   );
   const negotiations: Negotiation[] = negotiationRows.map((row) => ({ id: row.id, status: row.status, purchase_request_id: row.purchaseRequestId, buyer_company_id: row.buyerCompanyId, supplier_company_id: row.supplierCompanyId, created_at: row.createdAt.toISOString() }));
-  const requestIds = [...new Set(negotiations.map((negotiation) => negotiation.purchase_request_id))];
-  const negotiationIds = negotiations.map((negotiation) => negotiation.id);
-  const [requestRows, messageRows] = await Promise.all([
-    requestIds.length
-      ? prisma.purchaseRequest.findMany({ where: { id: { in: requestIds } }, orderBy: { createdAt: "desc" }, include: { items: true } })
-      : Promise.resolve([]),
-    negotiationIds.length
-      ? prisma.negotiationMessage.findMany({ where: { negotiationId: { in: negotiationIds } }, orderBy: { sentAt: "asc" } })
-      : Promise.resolve([]),
-  ]);
   const requests: PurchaseRequest[] = requestRows.map((row) => ({ id: row.id, status: row.status, required_by: row.requiredBy.toISOString().slice(0, 10), created_at: row.createdAt.toISOString(), purchase_request_items: row.items.map((item) => ({ id: item.id, product_id: item.productId, description: item.description, unit: item.unit, minimum_quantity: item.minimumQuantity.toString(), target_quantity: item.targetQuantity.toString(), maximum_quantity: item.maximumQuantity.toString(), status: item.status as "PENDING" | "AWARDED", pending_reason: item.pendingReason })) }));
   const messages: ProtocolMessageRow[] = messageRows.map((row) => ({ id: row.id, negotiation_id: row.negotiationId, message_type: row.messageType, sender_company_id: row.senderCompanyId, recipient_company_id: row.recipientCompanyId, sent_at: row.sentAt.toISOString(), payload: row.payload as Record<string, unknown>, raw_message: row.rawMessage as Record<string, unknown>, tender_round_id: row.tenderRoundId }));
   const orders: PurchaseOrder[] = orderRows.map((row) => ({
@@ -257,16 +281,10 @@ export default async function AccountPage({ params }: AccountPageProps) {
     purchase_order_items: row.items.map((item) => ({ id: item.id, product_id: item.productId, description: item.description, unit: item.unit, quantity: item.quantity.toString(), unit_price: item.unitPrice.toString(), total: item.total.toString() })),
   }));
   const profile: CompanyProfile | null = profileRow ? { tax_id: profileRow.taxId, address_line: profileRow.addressLine, city: profileRow.city, province: profileRow.province, contact_name: profileRow.contactName, contact_email: profileRow.contactEmail, contact_phone: profileRow.contactPhone, delivery_area: profileRow.deliveryArea } : null;
-  const companyNames = new Map(
-    companyRows.map((row) => [row.id, row.legalName]),
+  const companyNames = new Map<string, string>(
+    DEMO_COMPANIES.map((row) => [row.id, row.legalName]),
   );
 
-  const buyerContexts = isBuyer
-    ? await getBuyerProductContexts(
-        company.id,
-        inventory.flatMap((row) => row.products ? [row.products.external_id] : []),
-      )
-    : [];
   const openRequestStates = new Set([
     "AWAITING_APPROVAL",
     "APPROVED",
@@ -325,51 +343,53 @@ export default async function AccountPage({ params }: AccountPageProps) {
 
   return (
     <main className="shell company-workspace">
-      <header className="topbar workspace-topbar">
-        <div>
-          <p className="eyebrow">{isBuyer ? "Espacio del comercio" : "Supervisión del distribuidor"}</p>
-          <h1>{company.legal_name}</h1>
-          <p className="company-address">{profile ? `${profile.address_line} · ${profile.city}, ${profile.province}` : `/${company.slug}`}</p>
-        </div>
-        <nav aria-label="Navegación general" className="nav-links">
-          <Link href="/">Empresas</Link>
-          <Link href="/protocol">Auditoría global</Link>
+      {!isBuyer ? <>
+        <header className="topbar workspace-topbar">
+          <div>
+            <p className="eyebrow">Supervisión del distribuidor</p>
+            <h1>{company.legal_name}</h1>
+            <p className="company-address">{profile ? `${profile.address_line} · ${profile.city}, ${profile.province}` : `/${company.slug}`}</p>
+          </div>
+          <nav aria-label="Navegación general" className="nav-links">
+            <Link href="/">Empresas</Link>
+            <Link href="/protocol">Auditoría global</Link>
+          </nav>
+        </header>
+
+        <nav aria-label="Secciones de la empresa" className="workspace-tabs">
+          <a href="#resumen">Resumen</a>
+          <a href="#productos">Productos</a>
+          <a href="#pedidos">Pedidos</a>
+          <a href="#negociaciones">Negociaciones</a>
         </nav>
-      </header>
 
-      <nav aria-label="Secciones de la empresa" className="workspace-tabs">
-        <a href="#resumen">Resumen</a>
-        <a href="#productos">Productos</a>
-        <a href="#pedidos">Pedidos</a>
-        <a href="#negociaciones">Negociaciones</a>
-      </nav>
-
-      <section className="workspace-hero" id="resumen">
-        <div>
-          <p className="eyebrow">/{company.slug}</p>
-          <h2>{isBuyer ? "Tu stock. En movimiento." : "Tu próxima venta, más cerca."}</h2>
-          <p className="muted">{isBuyer ? "Lo que necesitás, cuando lo necesitás. Revisá tu inventario y dejá que Hermes converse con tus proveedores." : "Tus condiciones, tus propuestas y cada pedido en un mismo espacio. Vos tenés la última palabra."}</p>
-          <ContextModal
-            eyebrow="Contexto privado del agente"
-            sections={contextSections}
-            snapshots={[
-              { label: isBuyer ? "Contexto de reposición por producto" : "Inventario y costos propios", data: isBuyer ? buyerContexts : inventory },
-              { label: "Ejecuciones del agente de esta empresa", data: privateRuns },
-            ]}
-            subtitle="Este es exactamente el contexto propio que esta perspectiva puede consultar. No incluye la información privada de las contrapartes."
-            title={company.legal_name}
-            triggerLabel="Ver contexto privado completo"
-          />
-        </div>
-        <div className="workspace-metrics">
-          <div><span>Productos</span><strong>{inventory.length}</strong><small>con stock vigente</small></div>
-          <div><span>{isBuyer ? "Solicitudes" : "Licitaciones"}</span><strong>{requests.length}</strong><small>{pendingLines} líneas pendientes</small></div>
-          <div><span>Pedidos</span><strong>{orders.length}</strong><small>{money(centsToMoney(orders.reduce((sum, order) => sum + moneyToCents(String(order.total)), 0n)))}</small></div>
-        </div>
-      </section>
+        <section className="workspace-hero" id="resumen">
+          <div>
+            <p className="eyebrow">/{company.slug}</p>
+            <h2>Tu próxima venta, más cerca.</h2>
+            <p className="muted">Tus condiciones, tus propuestas y cada pedido en un mismo espacio. Vos tenés la última palabra.</p>
+            <ContextModal
+              eyebrow="Contexto privado del agente"
+              sections={contextSections}
+              snapshots={[
+                { label: "Inventario y costos propios", data: inventory },
+                { label: "Ejecuciones del agente de esta empresa", data: privateRuns },
+              ]}
+              subtitle="Este es exactamente el contexto propio que esta perspectiva puede consultar. No incluye la información privada de las contrapartes."
+              title={company.legal_name}
+              triggerLabel="Ver contexto privado completo"
+            />
+          </div>
+          <div className="workspace-metrics">
+            <div><span>Productos</span><strong>{inventory.length}</strong><small>con stock vigente</small></div>
+            <div><span>Licitaciones</span><strong>{requests.length}</strong><small>{pendingLines} líneas pendientes</small></div>
+            <div><span>Pedidos</span><strong>{orders.length}</strong><small>{money(centsToMoney(orders.reduce((sum, order) => sum + moneyToCents(String(order.total)), 0n)))}</small></div>
+          </div>
+        </section>
+      </> : null}
 
       {isBuyer && consolidatedDraft ? (
-        <BuyerOrderWorkspace companyId={company.id} draft={consolidatedDraft} />
+        <BuyerOrderWorkspace companyId={company.id} directOrder draft={consolidatedDraft} />
       ) : (
         <section aria-labelledby="products-title" className="workspace-section" id="productos">
           <div className="section-heading"><div><p className="eyebrow">Catálogo privado</p><h2 id="products-title">Inventario y costos propios</h2></div><span className="status">SÓLO SUPERVISIÓN</span></div>
@@ -405,6 +425,12 @@ export default async function AccountPage({ params }: AccountPageProps) {
                   {order.payment.tx_hash ? <a href={`https://arbiscan.io/tx/${order.payment.tx_hash}`} rel="noreferrer" target="_blank">Ver en Arbiscan</a> : null}
                   {order.payment.last_error ? <details><summary>Ver motivo</summary><small>{order.payment.last_error}</small></details> : null}
                 </div>
+              ) : isBuyer ? (
+                <PayOrderButton
+                  buyerCompanyId={company.id}
+                  paymentAvailable={paymentAvailable}
+                  purchaseOrderId={order.id}
+                />
               ) : null}
             </article>
           ))}

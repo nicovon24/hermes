@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   argtBaseUnitsToDisplay,
+  arsToDemoArgtBaseUnits,
   arsToArgtBaseUnits,
   paymentAgentId,
   paymentEventHash,
@@ -16,6 +17,12 @@ describe("ARGt payment domain", () => {
       1_234_567_890_123_456_780_000_000_000_000_000n,
     );
     expect(argtBaseUnitsToDisplay("1230000000000000000")).toBe("1.23");
+  });
+
+  it("scales commercial ARS totals down for proof-of-concept transfers", () => {
+    const amount = arsToDemoArgtBaseUnits("22738.00");
+    expect(amount).toBe(22_738_000_000_000_000_000n);
+    expect(argtBaseUnitsToDisplay(amount.toString())).toBe("22.738");
   });
 
   it("rejects amounts that cannot be represented as ARS cents", () => {

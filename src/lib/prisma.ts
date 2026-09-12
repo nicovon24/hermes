@@ -3,6 +3,7 @@ import "server-only";
 import { Prisma, PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+type TransactionTiming = { maxWait?: number; timeout?: number };
 
 export const prisma =
   globalForPrisma.prisma ??
@@ -12,25 +13,50 @@ export const prisma =
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
-export async function serializableTransaction<T>(
+async function transactionWithRetry<T>(
   operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+  isolationLevel: Prisma.TransactionIsolationLevel,
+  timing: TransactionTiming = {},
 ) {
   let lastError: unknown;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
       return await prisma.$transaction(operation, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        isolationLevel,
+        maxWait: timing.maxWait ?? 10_000,
+        timeout: timing.timeout ?? 30_000,
       });
     } catch (error) {
       lastError = error;
       const retryable =
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        ["P2002", "P2034"].includes(error.code);
+        ["P1017", "P2002", "P2028", "P2034"].includes(error.code);
       if (!retryable || attempt === 7) throw error;
-      // Parallel suppliers can contend on PostgreSQL predicate locks even when
-      // they update different rows. Backoff prevents synchronized retry storms.
+      // Backoff prevents synchronized retry storms after a conflict or deadlock.
       await new Promise((resolve) => setTimeout(resolve, Math.min(20 * 2 ** attempt, 300) + Math.floor(Math.random() * 20)));
     }
   }
   throw lastError;
+}
+
+export function serializableTransaction<T>(
+  operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+  timing?: TransactionTiming,
+) {
+  return transactionWithRetry(
+    operation,
+    Prisma.TransactionIsolationLevel.Serializable,
+    timing,
+  );
+}
+
+export function readCommittedTransaction<T>(
+  operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+  timing?: TransactionTiming,
+) {
+  return transactionWithRetry(
+    operation,
+    Prisma.TransactionIsolationLevel.ReadCommitted,
+    timing,
+  );
 }

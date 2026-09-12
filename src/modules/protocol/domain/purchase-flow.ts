@@ -49,6 +49,8 @@ export type TenderProgressEvent = {
   supplierId?: string; phase: TenderPhase; timestamp: string; messageId?: string;
   direction?: "outbound" | "inbound"; metrics?: TenderMetrics;
   summary?: TenderSummary; message?: string; status?: string;
+  recommendation?: { supplierNames: string[]; total: string; coveredProducts: number; pendingProducts: number };
+  requestItems?: Array<{ productId: string; description: string; quantity: string; unit: string }>;
 };
 export type TenderSnapshot = {
   requestId: string; tenderRoundId: string | null; status: string;

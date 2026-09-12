@@ -46,6 +46,15 @@ export function messageProgress(requestId: string, messages: ProgressMessage[], 
       supplierId: message.supplierId, timestamp: message.timestamp, phase, sequence: seen.size,
       direction: phase === "initial_offer" || phase === "final_offer" ? "inbound" : "outbound",
     };
+    if (phase === "rfq") {
+      const payload = record(message.payload);
+      event.requestItems = (Array.isArray(payload.items) ? payload.items : []).map(record).map((item) => ({
+        productId: String(item.productId ?? ""),
+        description: String(item.description ?? item.productId ?? "Producto"),
+        quantity: String(item.targetQuantity ?? item.quantity ?? "0"),
+        unit: String(item.unit ?? "unidades"),
+      }));
+    }
     if (["initial_offer", "counteroffer", "final_offer"].includes(phase)) {
       const offer = publicOffer(message.payload, requestedProducts);
       event.metrics = offerMetrics(offer, prior.initial, prior.previous, phase === "final_offer" ? prior.target : null, phase === "counteroffer");
@@ -72,6 +81,7 @@ export async function readProgressStream(body: ReadableStream<Uint8Array>, onEve
   const consume = (line: string) => {
     if (!line.trim()) return;
     const value = JSON.parse(line);
+    if (value.type === "connected") return;
     if (value.type === "transport_error") throw new Error(value.message);
     onEvent(value as TenderProgressEvent);
   };

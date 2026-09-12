@@ -27,8 +27,16 @@ export async function POST(request: Request) {
   }
   const encoder = new TextEncoder();
   let closed = false;
-  let controller: ReadableStreamDefaultController<Uint8Array>;
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
   const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; }, cancel() { closed = true; } });
+  // Flush the response before database setup begins. The padding also clears
+  // WebKit's small-response buffering threshold, so the client can display its
+  // connection state immediately while durable progress is being prepared.
+  controller.enqueue(encoder.encode(`${JSON.stringify({
+    type: "connected",
+    requestId: input.requestId,
+    padding: " ".repeat(1024),
+  })}\n`));
   const emit = (event: TenderProgressEvent) => {
     if (!closed) { try { controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`)); } catch { closed = true; } }
   };

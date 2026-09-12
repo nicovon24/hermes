@@ -4,6 +4,21 @@ import Groq from "groq-sdk";
 import { z } from "zod";
 
 import { groqEnv } from "@/lib/env";
+import { withStructuredOutputRetry } from "./structured-output";
+
+function groqClient(apiKey: string) {
+  return new Groq({
+    apiKey,
+    maxRetries: 0,
+    timeout: 8_000,
+  });
+}
+
+function reasoningOptions(model: string) {
+  return model.startsWith("openai/gpt-oss-")
+    ? { reasoning_effort: "low" as const, include_reasoning: false }
+    : {};
+}
 
 const recommendationSchema = z.object({
   recommendedOfferId: z.uuid().nullable(),
@@ -156,10 +171,11 @@ export type BuyerCounterInput = {
 
 export async function generateSupplierOfferDraft(input: SupplierTenderInput) {
   const { apiKey, model } = groqEnv();
-  const groq = new Groq({ apiKey });
-  const completion = await groq.chat.completions.create({
+  const groq = groqClient(apiKey);
+  const completion = await withStructuredOutputRetry(() => groq.chat.completions.create({
     model,
     temperature: 0.2,
+    ...reasoningOptions(model),
     messages: [
       {
         role: "system",
@@ -186,7 +202,7 @@ export async function generateSupplierOfferDraft(input: SupplierTenderInput) {
         schema: supplierOfferDraftJsonSchema,
       },
     },
-  });
+  }));
 
   const content = completion.choices[0]?.message.content;
   if (!content) throw new Error("Groq returned an empty supplier offer");
@@ -199,15 +215,16 @@ export async function generateSupplierOfferDraft(input: SupplierTenderInput) {
 
 export async function generateBuyerCounteroffers(input: BuyerCounterInput) {
   const { apiKey, model } = groqEnv();
-  const groq = new Groq({ apiKey });
+  const groq = groqClient(apiKey);
   const candidateKeys = new Set(
     input.offers.map(
       (offer) => `${offer.negotiationId}:${offer.supplierCompanyId}`,
     ),
   );
-  const completion = await groq.chat.completions.create({
+  const completion = await withStructuredOutputRetry(() => groq.chat.completions.create({
     model,
     temperature: 0.1,
+    ...reasoningOptions(model),
     messages: [
       {
         role: "system",
@@ -231,7 +248,7 @@ export async function generateBuyerCounteroffers(input: BuyerCounterInput) {
         schema: buyerCounteroffersJsonSchema,
       },
     },
-  });
+  }));
 
   const content = completion.choices[0]?.message.content;
   if (!content) throw new Error("Groq returned empty buyer counteroffers");
@@ -256,12 +273,13 @@ export async function rankEligibleOffers(
   buyerContext?: Record<string, unknown>,
 ) {
   const { apiKey, model } = groqEnv();
-  const groq = new Groq({ apiKey });
+  const groq = groqClient(apiKey);
   const candidateIds = new Set(offers.map((offer) => offer.id));
 
-  const completion = await groq.chat.completions.create({
+  const completion = await withStructuredOutputRetry(() => groq.chat.completions.create({
     model,
     temperature: 0.1,
+    ...reasoningOptions(model),
     messages: [
       {
         role: "system",
@@ -291,7 +309,7 @@ export async function rankEligibleOffers(
         schema: recommendationJsonSchema,
       },
     },
-  });
+  }));
 
   const content = completion.choices[0]?.message.content;
   if (!content) throw new Error("Groq returned an empty recommendation");

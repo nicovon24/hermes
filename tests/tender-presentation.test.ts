@@ -3,7 +3,7 @@ import { ENTRY_DURATION_MS, presentationBatchSize, presentationCadence, presenta
 
 describe("readable live presentation", () => {
   it("keeps a brief entrance and a minimum normal cadence", () => {
-    expect(ENTRY_DURATION_MS).toBe(1200);
+    expect(ENTRY_DURATION_MS).toBe(650);
     expect(presentationCadence(1)).toBe(750);
     expect(presentationBatchSize(4, 2000, false)).toBe(1);
   });

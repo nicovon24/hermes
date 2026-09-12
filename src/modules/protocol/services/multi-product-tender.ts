@@ -10,12 +10,15 @@ import { prisma } from "@/lib/prisma";
 import {
   getBuyerProductContext,
   getSupplierProductContext,
+  getSupplierProductContexts,
 } from "@/modules/context/analytics";
 import { createSupplierFallbackDraft } from "@/modules/protocol/domain/agent-fallback";
+import { generateSupplierOfferDraft } from "@/modules/protocol/agent/groq";
 import { protocolMessageSchema } from "@/modules/protocol/domain/message";
 import {
   buildSplitAwardRecommendation,
   type OfferLineForAward,
+  type SplitAwardRecommendation,
 } from "@/modules/protocol/domain/split-award";
 import { appendProtocolMessage } from "@/modules/protocol/services/negotiations";
 import {
@@ -55,6 +58,46 @@ type SupplierLine = {
   confirmedStock: true;
   deliveryDate: string;
 };
+
+export async function approveAvailableTenderRecommendation(
+  buyer: Actor,
+  purchaseRequestId: string,
+  payNow = false,
+) {
+  const request = await prisma.purchaseRequest.findUnique({ where: { id: purchaseRequestId } });
+  if (!request || request.buyerCompanyId !== buyer.companyId) {
+    throw new DomainError("No se encontró la recomendación", "NOT_FOUND", 404);
+  }
+  await prisma.mandate.updateMany({
+    where: { purchaseRequestId, status: "ACTIVE" },
+    data: {
+      autoPay: payNow,
+      ...(payNow ? { paymentTerms: "CONTADO", settlementAsset: "ARGt" } : {}),
+    },
+  });
+  const run = await prisma.agentRun.findFirst({
+    where: { purchaseRequestId, kind: "OFFER_RECOMMENDATION", status: "SUCCEEDED" },
+    orderBy: { createdAt: "desc" },
+    select: { output: true },
+  });
+  if (!run?.output || typeof run.output !== "object") {
+    throw new DomainError("Todavía no hay una recomendación para aprobar", "CONFLICT", 409);
+  }
+  const recommendation = run.output as unknown as SplitAwardRecommendation & Record<string, unknown>;
+  const tenderRoundId = typeof recommendation.tenderRoundId === "string"
+    ? recommendation.tenderRoundId
+    : null;
+  if (!tenderRoundId || !Array.isArray(recommendation.allocations) || recommendation.allocations.length === 0) {
+    throw new DomainError("La recomendación no contiene una oferta aprobable", "CONFLICT", 409);
+  }
+  return recordSplitAwardAndOrders({
+    purchaseRequestId,
+    buyerCompanyId: buyer.companyId,
+    tenderRoundId,
+    actorId: buyer.actorId,
+    recommendation,
+  });
+}
 
 type SupplierUnavailableLine = {
   requestItemId: string;
@@ -124,6 +167,7 @@ async function buildSupplierPayload({
   requiredBy,
   mandateExpiresAt,
   tenderRoundId,
+  supplierContexts,
 }: {
   supplierCompanyId: string;
   supplierName: string;
@@ -135,17 +179,17 @@ async function buildSupplierPayload({
   requiredBy: string;
   mandateExpiresAt: string;
   tenderRoundId: string;
+  supplierContexts?: Awaited<ReturnType<typeof getSupplierProductContexts>>;
 }) {
   const lines: SupplierLine[] = [];
   const unavailableItems: SupplierUnavailableLine[] = [];
   const contextSnapshot: Record<string, unknown>[] = [];
+  let usedModel = "deterministic-context-v1";
 
   for (const item of items) {
-    const context = await getSupplierProductContext(
-      supplierCompanyId,
-      buyerCompanyId,
-      item.product_id,
-    );
+    const context = supplierContexts?.find((candidate) =>
+      candidate.companyId === supplierCompanyId && candidate.productId === item.product_id
+    ) ?? await getSupplierProductContext(supplierCompanyId, buyerCompanyId, item.product_id);
     const requestedMicros = decimalToMicros(String(item.target_quantity));
     const availableMicros = decimalToMicros(String(Math.max(0, context.availableStock)));
     contextSnapshot.push({ requestItemId: item.id, ...context });
@@ -160,7 +204,7 @@ async function buildSupplierPayload({
       continue;
     }
 
-    const draft = createSupplierFallbackDraft({
+    const modelInput = {
       phase,
       supplierName,
       productId: item.product_id,
@@ -181,7 +225,17 @@ async function buildSupplierPayload({
         phase === "FINAL"
           ? "El comercio solicitó una mejora manteniendo stock y fecha."
           : undefined,
-    });
+    } as const;
+    let draft: Awaited<ReturnType<typeof generateSupplierOfferDraft>>["draft"] = createSupplierFallbackDraft(modelInput);
+    if (phase === "FINAL" && process.env.DISABLE_EXTERNAL_AGENT_CALLS !== "true") {
+      try {
+        const generated = await generateSupplierOfferDraft(modelInput);
+        draft = generated.draft;
+        usedModel = generated.model;
+      } catch (error) {
+        console.error(`Supplier model unavailable for ${supplierName}; using deterministic final offer`, error);
+      }
+    }
     const quantityMicros = decimalToMicros(String(item.target_quantity));
     const unitPriceCents = moneyToCents(draft.unitPrice);
     const subtotalCents = (quantityMicros * unitPriceCents) / 1_000_000n;
@@ -234,7 +288,7 @@ async function buildSupplierPayload({
         ? `Oferta final automática: ${lines.length} líneas confirmadas y ${unavailableItems.length} sin cobertura. Los precios respetan costo, margen objetivo y la contraoferta del comercio.`
         : `Oferta inicial automática: ${lines.length} líneas confirmadas y ${unavailableItems.length} sin cobertura, calculadas con inventario, costos, margen e historial del cliente.`,
   };
-  return { payload, contextSnapshot };
+  return { payload, contextSnapshot, model: usedModel };
 }
 
 function buildBuyerCounterPayload(
@@ -324,11 +378,13 @@ async function recordSupplierRun({
   purchaseRequestId,
   input,
   output,
+  model,
 }: {
   supplierCompanyId: string;
   purchaseRequestId: string;
   input: Record<string, unknown>;
   output: Record<string, unknown>;
+  model: string;
 }) {
   await prisma.agentRun.create({
     data: {
@@ -336,7 +392,7 @@ async function recordSupplierRun({
       purchaseRequestId,
       kind: "NEGOTIATION_DRAFT",
       provider: "GROQ",
-      model: "deterministic-commercial-agent-v2",
+      model,
       inputSnapshot: input as Prisma.InputJsonValue,
       output: output as Prisma.InputJsonValue,
       status: "SUCCEEDED",
@@ -348,7 +404,7 @@ async function recordSupplierRun({
 export async function runMultiProductTenderAgents(
   buyer: Actor,
   purchaseRequestId: string,
-  options: { onProgress?: () => Promise<void>; operationId?: string } = {},
+  options: { onProgress?: () => Promise<void>; operationId?: string; createOrders?: boolean } = {},
 ) {
   if (buyer.role !== "BUYER") {
     throw new DomainError("Sólo el comercio puede lanzar una licitación", "FORBIDDEN", 403);
@@ -421,147 +477,192 @@ export async function runMultiProductTenderAgents(
   const supplierNames = new Map(
     suppliers.map((supplier) => [supplier.id, supplier.legalName]),
   );
+  const supplierContexts = await getSupplierProductContexts(
+    negotiations.map((negotiation) => negotiation.supplier_company_id),
+    buyer.companyId,
+    items.map((item) => item.product_id),
+  );
   const responses: Array<{ supplierCompanyId: string; supplierName: string; ok: boolean }> = [];
+  const initialPayloads = new Map<string, SupplierPayload>();
+  const initialMessageIds = new Map<string, string>();
 
-  const results = await Promise.allSettled(negotiations.map(async (negotiation) => {
+  // Round 1 is deterministic and independent per distributor. Publishing the
+  // three branches together keeps remote database latency off the critical path.
+  await Promise.all(negotiations.map(async (negotiation) => {
     const supplierName = supplierNames.get(negotiation.supplier_company_id) ?? "Distribuidor";
     try {
-    const existingMessages = await prisma.negotiationMessage.findMany({ where: { negotiationId: negotiation.id, tenderRoundId } });
-    const persisted = (type: string) => existingMessages.find((message) => message.messageType === type);
-    const rfq = await appendTenderMessage({
-      actor: { ...buyer, actorId: `buyer-agent:${buyer.companyId}`, actorType: "AGENT" },
-      type: "request_for_quote",
-      negotiation,
-      purchaseRequestId,
-      tenderRoundId: String(tenderRoundId),
-      recipientCompanyId: negotiation.supplier_company_id,
-      correlationId: null,
-      expiresAt: mandate.expiresAt.toISOString(),
-      payload: {
-        items: items.map((item) => ({
-          requestItemId: item.id,
-          productId: item.product_id,
-          description: item.description,
-          unit: item.unit,
-          minimumQuantity: String(item.minimum_quantity),
-          targetQuantity: String(item.target_quantity),
-          maximumQuantity: String(item.maximum_quantity),
-        })),
-        requiredBy: request.requiredBy.toISOString().slice(0, 10),
-        paymentTerms: mandate.paymentTerms,
-        notes: `Ronda ${round.roundNumber}: cotizar todas las líneas e indicar expresamente las que no tienen cobertura.`,
-      },
-    });
-    await options.onProgress?.();
-
-    const initial = persisted("offer") ? { payload: persisted("offer")!.payload as unknown as SupplierPayload, contextSnapshot: [] } : await buildSupplierPayload({
-      supplierCompanyId: negotiation.supplier_company_id,
-      supplierName,
-      buyerCompanyId: buyer.companyId,
-      items,
-      phase: "INITIAL",
-      maximumTenderTotal: mandate.maximumTotalIncludingFees.toString(),
-      requiredBy: request.requiredBy.toISOString().slice(0, 10),
-      mandateExpiresAt: mandate.expiresAt.toISOString(),
-      tenderRoundId,
-    });
-    const supplierActor: Actor = {
-      actorId: `supplier-agent:${negotiation.supplier_company_id}`,
-      actorType: "AGENT",
-      companyId: negotiation.supplier_company_id,
-      role: "SUPPLIER",
-    };
-    const initialMessage = await appendTenderMessage({
-      actor: supplierActor,
-      type: "offer",
-      negotiation,
-      purchaseRequestId,
-      tenderRoundId: String(tenderRoundId),
-      recipientCompanyId: buyer.companyId,
-      correlationId: rfq.messageId,
-      expiresAt: initial.payload.validUntil,
-      payload: initial.payload,
-    });
-    await options.onProgress?.();
-
-    const counterPayload = persisted("counteroffer") ? persisted("counteroffer")!.payload as unknown as SupplierPayload : buildBuyerCounterPayload(
-      initial.payload,
-      tenderRoundId,
-      mandate.expiresAt.toISOString(),
-    );
-    const counterMessage = await appendTenderMessage({
-      actor: { ...buyer, actorId: `buyer-agent:${buyer.companyId}`, actorType: "AGENT" },
-      type: "counteroffer",
-      negotiation,
-      purchaseRequestId,
-      tenderRoundId: String(tenderRoundId),
-      recipientCompanyId: negotiation.supplier_company_id,
-      correlationId: initialMessage.messageId,
-      expiresAt: counterPayload.validUntil,
-      payload: counterPayload,
-    });
-    await options.onProgress?.();
-    const counterPrices = new Map(
-      counterPayload.lines.map((line) => [line.requestItemId, line.unitPrice]),
-    );
-    const final = persisted("final_offer") ? { payload: persisted("final_offer")!.payload as unknown as SupplierPayload, contextSnapshot: [] } : await buildSupplierPayload({
-      supplierCompanyId: negotiation.supplier_company_id,
-      supplierName,
-      buyerCompanyId: buyer.companyId,
-      items,
-      phase: "FINAL",
-      counterUnitPrices: counterPrices,
-      maximumTenderTotal: mandate.maximumTotalIncludingFees.toString(),
-      requiredBy: request.requiredBy.toISOString().slice(0, 10),
-      mandateExpiresAt: mandate.expiresAt.toISOString(),
-      tenderRoundId,
-    });
-    const finalMessage = await appendTenderMessage({
-      actor: supplierActor,
-      type: "final_offer",
-      negotiation,
-      purchaseRequestId,
-      tenderRoundId: String(tenderRoundId),
-      recipientCompanyId: buyer.companyId,
-      correlationId: counterMessage.messageId,
-      expiresAt: final.payload.validUntil,
-      payload: final.payload,
-    });
-    await options.onProgress?.();
-    if (!finalMessage.duplicate) {
-      await recordSupplierRun({
-        supplierCompanyId: negotiation.supplier_company_id,
+      const existingMessages = await prisma.negotiationMessage.findMany({ where: { negotiationId: negotiation.id, tenderRoundId } });
+      const persistedRfq = existingMessages.find((message) => message.messageType === "request_for_quote");
+      const persistedInitial = existingMessages.find((message) => message.messageType === "offer");
+      const rfq = persistedRfq ? { messageId: persistedRfq.id } : await appendTenderMessage({
+        actor: { ...buyer, actorId: `buyer-agent:${buyer.companyId}`, actorType: "AGENT" },
+        type: "request_for_quote",
+        negotiation,
         purchaseRequestId,
-        input: {
-          tenderRoundId,
-          roundNumber: round.roundNumber,
-          buyerCompanyId: buyer.companyId,
-          requestItems: items,
-          privateSupplierContext: final.contextSnapshot,
+        tenderRoundId: String(tenderRoundId),
+        recipientCompanyId: negotiation.supplier_company_id,
+        correlationId: null,
+        expiresAt: mandate.expiresAt.toISOString(),
+        payload: {
+          items: items.map((item) => ({
+            requestItemId: item.id,
+            productId: item.product_id,
+            description: item.description,
+            unit: item.unit,
+            minimumQuantity: String(item.minimum_quantity),
+            targetQuantity: String(item.target_quantity),
+            maximumQuantity: String(item.maximum_quantity),
+          })),
+          requiredBy: request.requiredBy.toISOString().slice(0, 10),
+          paymentTerms: mandate.paymentTerms,
+          notes: `Ronda ${round.roundNumber}: cotizar todas las líneas e indicar expresamente las que no tienen cobertura.`,
         },
-        output: final.payload,
       });
-    }
-    responses.push({ supplierCompanyId: negotiation.supplier_company_id, supplierName, ok: true });
+      const initial = persistedInitial
+        ? { payload: persistedInitial.payload as unknown as SupplierPayload }
+        : await buildSupplierPayload({
+            supplierCompanyId: negotiation.supplier_company_id,
+            supplierName,
+            buyerCompanyId: buyer.companyId,
+            items,
+            phase: "INITIAL",
+            maximumTenderTotal: mandate.maximumTotalIncludingFees.toString(),
+            requiredBy: request.requiredBy.toISOString().slice(0, 10),
+            mandateExpiresAt: mandate.expiresAt.toISOString(),
+            tenderRoundId,
+            supplierContexts,
+          });
+      const supplierActor: Actor = {
+        actorId: `supplier-agent:${negotiation.supplier_company_id}`,
+        actorType: "AGENT",
+        companyId: negotiation.supplier_company_id,
+        role: "SUPPLIER",
+      };
+      const initialMessage = persistedInitial ? { messageId: persistedInitial.id } : await appendTenderMessage({
+        actor: supplierActor,
+        type: "offer",
+        negotiation,
+        purchaseRequestId,
+        tenderRoundId: String(tenderRoundId),
+        recipientCompanyId: buyer.companyId,
+        correlationId: rfq.messageId,
+        expiresAt: initial.payload.validUntil,
+        payload: initial.payload,
+      });
+      initialPayloads.set(negotiation.id, initial.payload);
+      initialMessageIds.set(negotiation.id, initialMessage.messageId);
+      await options.onProgress?.();
     } catch (error) {
       await prisma.domainEvent.create({ data: {
         aggregateType: "purchase_request", aggregateId: purchaseRequestId, eventType: "tender.flow.error",
-        payload: { operationId: options.operationId ?? "", supplierId: negotiation.supplier_company_id, message: `${supplierName} no pudo completar su respuesta. Las demás conversaciones se conservaron.` },
-      } });
+        payload: { operationId: options.operationId ?? "", supplierId: negotiation.supplier_company_id, message: `${supplierName} no pudo publicar su oferta inicial.` },
+      } }).catch((eventError) => console.error("Could not persist initial-offer error", eventError));
       await options.onProgress?.();
-      throw error;
+      console.error("Supplier initial offer failed", error);
     }
   }));
-  if (results.some((result) => result.status === "rejected")) {
-    throw new DomainError("Faltan ofertas finales. Podés reintentar las conversaciones pendientes.", "CONFLICT", 409);
-  }
 
-  const activeOffers = await prisma.offer.findMany({
-    where: { purchaseRequestId, tenderRoundId, status: "ACTIVE" },
+  // Round 2 starts after the deterministic openings. Structured model calls run
+  // one at a time because concurrent JSON-schema generations can intermittently
+  // fail at the provider. Each committed supplier result is still published at once.
+  for (const negotiation of negotiations) {
+    const initialPayload = initialPayloads.get(negotiation.id);
+    const initialMessageId = initialMessageIds.get(negotiation.id);
+    if (!initialPayload || !initialMessageId) return;
+    const supplierName = supplierNames.get(negotiation.supplier_company_id) ?? "Distribuidor";
+    try {
+      const existingMessages = await prisma.negotiationMessage.findMany({ where: { negotiationId: negotiation.id, tenderRoundId } });
+      const persistedCounter = existingMessages.find((message) => message.messageType === "counteroffer");
+      const persistedFinal = existingMessages.find((message) => message.messageType === "final_offer");
+      const counterPayload = persistedCounter
+        ? persistedCounter.payload as unknown as SupplierPayload
+        : buildBuyerCounterPayload(initialPayload, tenderRoundId, mandate.expiresAt.toISOString());
+      const counterMessage = persistedCounter ? { messageId: persistedCounter.id } : await appendTenderMessage({
+        actor: { ...buyer, actorId: `buyer-agent:${buyer.companyId}`, actorType: "AGENT" },
+        type: "counteroffer",
+        negotiation,
+        purchaseRequestId,
+        tenderRoundId: String(tenderRoundId),
+        recipientCompanyId: negotiation.supplier_company_id,
+        correlationId: initialMessageId,
+        expiresAt: counterPayload.validUntil,
+        payload: counterPayload,
+      });
+      await options.onProgress?.();
+      const counterPrices = new Map(counterPayload.lines.map((line) => [line.requestItemId, line.unitPrice]));
+      const final = persistedFinal
+        ? { payload: persistedFinal.payload as unknown as SupplierPayload, contextSnapshot: [], model: "persisted" }
+        : await buildSupplierPayload({
+            supplierCompanyId: negotiation.supplier_company_id,
+            supplierName,
+            buyerCompanyId: buyer.companyId,
+            items,
+            phase: "FINAL",
+            counterUnitPrices: counterPrices,
+            maximumTenderTotal: mandate.maximumTotalIncludingFees.toString(),
+            requiredBy: request.requiredBy.toISOString().slice(0, 10),
+            mandateExpiresAt: mandate.expiresAt.toISOString(),
+            tenderRoundId,
+            supplierContexts,
+          });
+      const supplierActor: Actor = {
+        actorId: `supplier-agent:${negotiation.supplier_company_id}`,
+        actorType: "AGENT",
+        companyId: negotiation.supplier_company_id,
+        role: "SUPPLIER",
+      };
+      const finalMessage = persistedFinal ? { duplicate: true } : await appendTenderMessage({
+        actor: supplierActor,
+        type: "final_offer",
+        negotiation,
+        purchaseRequestId,
+        tenderRoundId: String(tenderRoundId),
+        recipientCompanyId: buyer.companyId,
+        correlationId: counterMessage.messageId,
+        expiresAt: final.payload.validUntil,
+        payload: final.payload,
+      });
+      await options.onProgress?.();
+      if (!finalMessage.duplicate) {
+        await recordSupplierRun({
+          supplierCompanyId: negotiation.supplier_company_id,
+          purchaseRequestId,
+          model: final.model,
+          input: {
+            tenderRoundId,
+            roundNumber: round.roundNumber,
+            buyerCompanyId: buyer.companyId,
+            requestItems: items,
+            privateSupplierContext: final.contextSnapshot,
+          },
+          output: final.payload,
+        });
+      }
+      responses.push({ supplierCompanyId: negotiation.supplier_company_id, supplierName, ok: true });
+    } catch (error) {
+      await prisma.domainEvent.create({ data: {
+        aggregateType: "purchase_request", aggregateId: purchaseRequestId, eventType: "tender.flow.error",
+        payload: { operationId: options.operationId ?? "", supplierId: negotiation.supplier_company_id, message: `${supplierName} no pudo completar su oferta final. Las demás respuestas se conservaron.` },
+      } }).catch((eventError) => console.error("Could not persist final-offer error", eventError));
+      await options.onProgress?.();
+      console.error("Supplier final negotiation failed", error);
+    }
+  }
+  const finalMessages = await prisma.negotiationMessage.findMany({
+    where: { purchaseRequestId, tenderRoundId, messageType: "final_offer" },
+    select: { id: true },
   });
-  if (activeOffers.length !== 3) {
+  const activeOffers = await prisma.offer.findMany({
+    where: {
+      purchaseRequestId,
+      tenderRoundId,
+      status: "ACTIVE",
+      messageId: { in: finalMessages.map(({ id }) => id) },
+    },
+  });
+  if (activeOffers.length === 0) {
     throw new DomainError(
-      "La adjudicación necesita una oferta final de cada distribuidor",
+      "Todavía no hay una oferta final disponible para recomendar",
       "CONFLICT",
       409,
     );
@@ -622,8 +723,54 @@ export async function runMultiProductTenderAgents(
     roundNumber: round.roundNumber,
     buyerContext: buyerContexts,
     explanation:
-      "El agente evaluó cada producto por separado: proveedor autorizado, oferta vigente, stock confirmado, fecha requerida y presupuesto. Ante empate priorizó menor total y luego entrega más temprana.",
+      `El agente evaluó ${activeOffers.length} ${activeOffers.length === 1 ? "oferta final disponible" : "ofertas finales disponibles"}: proveedor autorizado, vigencia, stock, fecha requerida y presupuesto. Ante empate priorizó menor total y luego entrega más temprana.`,
   };
+  if (!options.createOrders) {
+    await prisma.$transaction(async (tx) => {
+      const previous = await tx.agentRun.findFirst({
+        where: { purchaseRequestId, kind: "OFFER_RECOMMENDATION", status: "SUCCEEDED" },
+        orderBy: { createdAt: "desc" },
+        select: { output: true },
+      });
+      const previousRound = previous?.output && typeof previous.output === "object"
+        ? (previous.output as Record<string, unknown>).tenderRoundId
+        : null;
+      if (previousRound !== tenderRoundId) {
+        await tx.agentRun.create({
+          data: {
+            companyId: buyer.companyId,
+            purchaseRequestId,
+            kind: "OFFER_RECOMMENDATION",
+            provider: "POLICY",
+            model: "deterministic-split-award-v2",
+            inputSnapshot: { tenderRoundId, availableOffers: activeOffers.length },
+            output: JSON.parse(JSON.stringify(recommendationWithContext)) as Prisma.InputJsonValue,
+            status: "SUCCEEDED",
+            createdBy: buyer.actorId,
+          },
+        });
+      }
+      await tx.purchaseRequest.updateMany({
+        where: { id: purchaseRequestId, status: { in: ["NEGOTIATING", "RECOMMENDED"] } },
+        data: { status: "RECOMMENDED", version: { increment: 1 } },
+      });
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      maxWait: 10_000,
+      timeout: 30_000,
+    });
+    await options.onProgress?.();
+    return {
+      requested: 3,
+      completed: responses.length,
+      responses,
+      status: "RECOMMENDED",
+      orderCount: 0,
+      buyerStrategy: recommendationWithContext.explanation,
+      recommendation: recommendationWithContext,
+      buyerContexts,
+    };
+  }
   const orderResult = await recordSplitAwardAndOrders({
     purchaseRequestId,
     buyerCompanyId: buyer.companyId,

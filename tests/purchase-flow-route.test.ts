@@ -28,7 +28,10 @@ describe("internal purchase-flow endpoint", () => {
     const response = await POST(request({ Host: "127.0.0.1:3001", Origin: "http://127.0.0.1:3001" }));
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/x-ndjson");
-    expect(await response.text()).toBe(`${JSON.stringify(event)}\n`);
+    const [connected, progress] = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(connected).toMatchObject({ type: "connected", requestId });
+    expect(connected.padding.length).toBeGreaterThanOrEqual(1024);
+    expect(progress).toEqual(event);
     expect(mock.after).toHaveBeenCalledOnce();
   });
   it("enforces the fixed demo buyer", async () => {
@@ -44,10 +47,24 @@ describe("internal purchase-flow endpoint", () => {
     await expect(mock.after.mock.calls[0][0]()).resolves.toBeUndefined();
     expect(mock.launch).toHaveBeenCalledOnce();
   });
+  it("flushes the connection prelude before the purchase flow settles", async () => {
+    let finish!: () => void;
+    mock.launch.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const response = await POST(request());
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    const connected = JSON.parse(new TextDecoder().decode(first.value));
+    expect(connected).toMatchObject({ type: "connected", requestId });
+    expect(first.done).toBe(false);
+    await reader.cancel();
+    finish();
+  });
   it("reports transport failures without fabricating a persisted progress event", async () => {
     mock.launch.mockRejectedValue(new Error("connection failed"));
     const response = await POST(request());
-    const result = JSON.parse((await response.text()).trim());
+    const messages = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(messages[0]).toMatchObject({ type: "connected", requestId });
+    const result = messages.at(-1);
     expect(result.type).toBe("transport_error");
     expect(result).not.toHaveProperty("phase");
     expect(result).not.toHaveProperty("sequence");

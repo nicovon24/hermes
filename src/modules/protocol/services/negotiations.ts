@@ -5,7 +5,11 @@ import { Prisma } from "@prisma/client";
 import { rankEligibleOffers, type AgentOffer } from "@/modules/protocol/agent/groq";
 import type { Actor } from "@/lib/demo-workspace";
 import { DomainError } from "@/lib/domain/errors";
-import { prisma, serializableTransaction } from "@/lib/prisma";
+import {
+  prisma,
+  readCommittedTransaction,
+  serializableTransaction,
+} from "@/lib/prisma";
 import { evaluateOfferAgainstMandate } from "@/modules/protocol/domain/policy";
 import {
   parseOfferPayload,
@@ -33,7 +37,7 @@ export async function appendProtocolMessage(
     throw new DomainError("Sender company mismatch", "FORBIDDEN", 403);
   }
 
-  return serializableTransaction(
+  return readCommittedTransaction(
     async (tx) => {
       const existing = await tx.negotiationMessage.findUnique({
         where: {
@@ -161,33 +165,31 @@ export async function appendProtocolMessage(
         }
       }
 
-      await Promise.all([
-        tx.domainEvent.create({
-          data: {
-            aggregateType: "negotiation",
-            aggregateId: negotiation.id,
-            eventType: `protocol.${message.type}`,
-            payload: {
-              messageId: message.messageId,
-              negotiationId: negotiation.id,
-              purchaseRequestId: message.purchaseRequestId,
-              senderCompanyId: message.senderCompanyId,
-              recipientCompanyId: message.recipientCompanyId,
-            },
+      await tx.domainEvent.create({
+        data: {
+          aggregateType: "negotiation",
+          aggregateId: negotiation.id,
+          eventType: `protocol.${message.type}`,
+          payload: {
+            messageId: message.messageId,
+            negotiationId: negotiation.id,
+            purchaseRequestId: message.purchaseRequestId,
+            senderCompanyId: message.senderCompanyId,
+            recipientCompanyId: message.recipientCompanyId,
           },
-        }),
-        tx.auditLog.create({
-          data: {
-            companyId: message.senderCompanyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            action: `protocol.${message.type}`,
-            aggregateType: "negotiation",
-            aggregateId: negotiation.id,
-            metadata: { messageId: message.messageId },
-          },
-        }),
-      ]);
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          companyId: message.senderCompanyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          action: `protocol.${message.type}`,
+          aggregateType: "negotiation",
+          aggregateId: negotiation.id,
+          metadata: { messageId: message.messageId },
+        },
+      });
       return { messageId: message.messageId, duplicate: false };
     },
   );

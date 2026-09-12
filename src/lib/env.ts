@@ -2,6 +2,21 @@ import "server-only";
 
 import { isAddress, type Address, type Hex } from "viem";
 
+import {
+  DEFAULT_BUYER_COMPANY_ID,
+  DEMO_SUPPLIER_COMPANY_IDS,
+} from "@/lib/demo-workspace";
+
+const DEMO_BUYER_WALLET = "0xC89258f21CD952eB09de39b40e0557fF472C87aC";
+const DEMO_SUPPLIER_WALLET = "0x3f0e3d8e86435a07a1d61532e004a86e722f5de0";
+
+const demoPaymentWallets = {
+  [DEFAULT_BUYER_COMPANY_ID]: DEMO_BUYER_WALLET,
+  ...Object.fromEntries(
+    DEMO_SUPPLIER_COMPANY_IDS.map((companyId) => [companyId, DEMO_SUPPLIER_WALLET]),
+  ),
+};
+
 function required(name: string, value: string | undefined) {
   if (!value) {
     throw new Error(`Missing required environment variable: ${name}`);
@@ -25,15 +40,29 @@ export type PaymentEnvironment = {
   requiredConfirmations: number;
 };
 
+export function paymentEnvironmentAvailable() {
+  try {
+    paymentEnv();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function paymentEnv(): PaymentEnvironment {
-  const privateKey = required("AGENT_PRIVATE_KEY", process.env.AGENT_PRIVATE_KEY);
+  const configuredPrivateKey = required("AGENT_PRIVATE_KEY", process.env.AGENT_PRIVATE_KEY);
+  const privateKey = configuredPrivateKey.startsWith("0x")
+    ? configuredPrivateKey
+    : `0x${configuredPrivateKey}`;
   if (!/^0x[\da-fA-F]{64}$/.test(privateKey)) {
     throw new Error("AGENT_PRIVATE_KEY must be a 32-byte hex private key");
   }
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(required("PAYMENT_WALLETS_JSON", process.env.PAYMENT_WALLETS_JSON));
+    parsed = process.env.PAYMENT_WALLETS_JSON
+      ? JSON.parse(process.env.PAYMENT_WALLETS_JSON)
+      : demoPaymentWallets;
   } catch {
     throw new Error("PAYMENT_WALLETS_JSON must be valid JSON");
   }

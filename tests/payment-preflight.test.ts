@@ -87,8 +87,8 @@ describe("automatic payment preflight", () => {
     ], gateway);
 
     expect(result.map(({ amount }) => amount)).toEqual([
-      100_250_000_000_000_000_000n,
-      200_500_000_000_000_000_000n,
+      100_250_000_000_000_000n,
+      200_500_000_000_000_000n,
     ]);
     expect(gateway.simulations).toHaveLength(2);
     expect(gateway.submissions).toHaveLength(0);
@@ -116,14 +116,14 @@ describe("automatic payment preflight", () => {
   });
 
   it("rejects insufficient aggregate balance and the per-payment limit", async () => {
-    const lowBalance = new FakeGateway(BUYER, 299n * 10n ** 18n);
+    const lowBalance = new FakeGateway(BUYER, 299_000_000_000_000_000n);
     await expect(preflightPayments([
       order("order-a", SUPPLIER_A_ID, "PO-A", "100.00"),
       order("order-b", SUPPLIER_B_ID, "PO-B", "200.00"),
     ], lowBalance)).rejects.toThrow("Insufficient aggregate ARGt balance");
     expect(lowBalance.simulations).toHaveLength(0);
 
-    process.env.MAX_PAYMENT_BASE_UNITS = (99n * 10n ** 18n).toString();
+    process.env.MAX_PAYMENT_BASE_UNITS = 99_000_000_000_000_000n.toString();
     const overLimit = new FakeGateway();
     await expect(preflightPayments([
       order("order-a", SUPPLIER_A_ID, "PO-A", "100.00"),
