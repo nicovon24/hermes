@@ -374,6 +374,7 @@ model Payment {
   id                   String         @id(map: "Payment_pkey") @default(cuid())
   conversationId       String         @map("conversation_id")
   purchaseOrderId      String?        @unique(map: "payments_purchase_order_id_key") @map("purchase_order_id") @db.Uuid
+  quoteId              String?        @map("quote_id")
   payerAgentId         String         @map("payer_agent_id")
   payeeAgentId         String         @map("payee_agent_id")
   payerWallet          String         @map("payer_wallet")
@@ -419,6 +420,7 @@ model Quote {
   destinationNetwork String      @map("destination_network")
   destinationToken   String      @map("destination_token")
   destinationAmount  String      @map("destination_amount")
+  exchangeRate       String      @default("0") @map("exchange_rate")
   bridgeFee          String      @map("bridge_fee")
   swapFee            String      @map("swap_fee")
   gasFee             String      @map("gas_fee")

@@ -4,6 +4,7 @@ import { getBuyerCompanyId, requireBuyerActor } from "@/lib/demo-workspace";
 import { toDomainError } from "@/lib/domain/errors";
 import { runAutomaticPaymentsForPurchaseRequest } from "@/modules/payments/service";
 import { approveAvailableTenderRecommendation } from "@/modules/protocol/services/multi-product-tender";
+import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -28,8 +29,11 @@ export async function POST(
 
   try {
     const { requestId } = await params;
-    const body = await request.json().catch(() => ({})) as { payNow?: unknown };
+    const body = await request.json().catch(() => ({})) as { payNow?: unknown; route?: unknown; quoteId?: unknown };
     const payNow = body.payNow === true;
+    const route = body.route === "SOLANA_TO_ARBITRUM" ? "SOLANA_TO_ARBITRUM" : "ARBITRUM_DIRECT";
+    const quoteId = typeof body.quoteId === "string" ? body.quoteId : null;
+    const executionRoute = quoteId ? "SOLANA_TO_ARBITRUM" : route;
     const actor = await requireBuyerActor(getBuyerCompanyId());
     const result = await approveAvailableTenderRecommendation(actor, requestId, payNow);
 
@@ -42,7 +46,19 @@ export async function POST(
     };
     if (payNow) {
       try {
-        const payment = await runAutomaticPaymentsForPurchaseRequest(actor, requestId);
+        const payment = await runAutomaticPaymentsForPurchaseRequest(actor, requestId, undefined, undefined, executionRoute);
+        if (quoteId && route === "SOLANA_TO_ARBITRUM") {
+          const quote = await prisma.quote.findUnique({ where: { id: quoteId } });
+          if (!quote || quote.expiresAt <= new Date() || quote.destinationToken !== "ARGt") {
+            throw new Error("La cotización no existe, venció o no corresponde a ARGt");
+          }
+          const [whole, fraction = ""] = quote.destinationAmount.split(".");
+          const amountBaseUnits = BigInt(whole) * 10n ** 18n + BigInt(fraction.padEnd(18, "0").slice(0, 18));
+          await prisma.payment.updateMany({
+            where: { purchaseOrderId: { in: result.orders.map((order) => order.id) } },
+            data: { quoteId, amountBaseUnits: amountBaseUnits.toString(), route },
+          });
+        }
         responseBody = payment.error
           ? {
               ok: false,

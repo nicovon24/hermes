@@ -4,13 +4,14 @@ import { getAssociatedTokenAddress } from "@solana/spl-token";
 import { prisma } from "@/lib/prisma";
 import { ARGt, argtAbi, agentWalletClient, publicClient } from "@/lib/chain";
 import { formatEther } from "viem";
-import { solanaAgentKeypair } from "@/lib/solana";
 
 export async function settleFromSolana(paymentId: string, sourceSignature: string) {
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
   if (!payment) throw new Error("Payment not found");
   if (payment.route !== "SOLANA_TO_ARBITRUM") throw new Error("Payment route does not use Solana settlement");
-  if (payment.status !== "PAYMENT_AUTHORIZED") throw new Error("Payment must be authorized before settlement");
+  if (payment.status !== "PAYMENT_AUTHORIZED" && payment.status !== "SOURCE_PAYMENT_CONFIRMED") {
+    throw new Error("Payment must be authorized before settlement");
+  }
 
   const solana = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com", "confirmed");
   const status = (await solana.getSignatureStatuses([sourceSignature], { searchTransactionHistory: true })).value[0];
@@ -20,25 +21,45 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
 
   const transaction = await solana.getParsedTransaction(sourceSignature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
   if (!transaction) throw new Error("Source Solana transaction not found");
-  const expectedMint = process.env.SOLANA_TEST_MINT_ADDRESS;
+  const expectedMint = process.env.SOLANA_USDC_MINT || process.env.SOLANA_TEST_MINT_ADDRESS;
   if (!expectedMint) throw new Error("SOLANA_TEST_MINT_ADDRESS is not configured");
+  const quote = payment.quoteId ? await prisma.quote.findUnique({ where: { id: payment.quoteId } }) : null;
+  if (!quote || quote.expiresAt <= new Date()) throw new Error("Payment quote is missing or expired");
+  const [sourceWhole, sourceFraction = ""] = quote.sourceAmount.split(".");
+  const expectedAmount = BigInt(sourceWhole) * 10n ** 6n + BigInt(sourceFraction.padEnd(6, "0").slice(0, 6));
   const baseUnits = BigInt(payment.amountBaseUnits);
-  const conversion = 10n ** 12n; // ARGt 18 decimals → SPL test token 6 decimals
-  if (baseUnits <= 0n || baseUnits % conversion !== 0n) throw new Error("Payment amount is not representable by the Solana token decimals");
-  const expectedAmount = baseUnits / conversion;
+  if (baseUnits <= 0n) throw new Error("Payment amount must be positive");
   if (expectedAmount > 18446744073709551615n) throw new Error("Payment amount exceeds SPL token range");
-  const expectedAuthority = solanaAgentKeypair().publicKey.toBase58();
+  const expectedAuthority = process.env.SOLANA_SOURCE_WALLET;
+  if (!expectedAuthority) throw new Error("SOLANA_SOURCE_WALLET is not configured");
   const expectedDestinationWallet = process.env.SOLANA_SETTLEMENT_WALLET;
   if (!expectedDestinationWallet) throw new Error("SOLANA_SETTLEMENT_WALLET is not configured");
+  const configuredDestinationAccount = process.env.SOLANA_SETTLEMENT_TOKEN_ACCOUNT;
   const expectedDestination = (await getAssociatedTokenAddress(new PublicKey(expectedMint), new PublicKey(expectedDestinationWallet))).toBase58();
   const matchingTransfer = transaction.transaction.message.instructions.some((instruction) => {
     if (!("parsed" in instruction) || !instruction.parsed || typeof instruction.parsed !== "object") return false;
     const parsed = instruction.parsed as { type?: string; info?: { mint?: string; amount?: string; source?: string; destination?: string; authority?: string; tokenAmount?: { amount?: string } } };
     if (parsed.type !== "transfer" && parsed.type !== "transferChecked") return false;
     const amount = parsed.info?.amount ?? parsed.info?.tokenAmount?.amount;
-    return parsed.info?.mint === expectedMint && amount === expectedAmount.toString() && parsed.info?.authority === expectedAuthority && parsed.info?.destination === expectedDestination;
+    return parsed.info?.mint === expectedMint && amount === expectedAmount.toString() && parsed.info?.authority === expectedAuthority && !!parsed.info?.destination;
   });
   if (!matchingTransfer) throw new Error("Source Solana mint or amount does not match payment");
+  const transferInstruction = transaction.transaction.message.instructions.find((instruction) => {
+    if (!("parsed" in instruction) || !instruction.parsed || typeof instruction.parsed !== "object") return false;
+    const parsed = instruction.parsed as { type?: string; info?: { destination?: string; mint?: string; amount?: string; tokenAmount?: { amount?: string } } };
+    const amount = parsed.info?.amount ?? parsed.info?.tokenAmount?.amount;
+    return (parsed.type === "transfer" || parsed.type === "transferChecked") && parsed.info?.mint === expectedMint && amount === expectedAmount.toString() && !!parsed.info?.destination;
+  });
+  const destination = (transferInstruction as { parsed?: { info?: { destination?: string } } })?.parsed?.info?.destination;
+  if (!destination) throw new Error("Source Solana destination is missing");
+  if (configuredDestinationAccount) {
+    if (destination !== configuredDestinationAccount) throw new Error("Source Solana destination does not belong to settlement wallet");
+  } else {
+    const destinationInfo = await solana.getParsedAccountInfo(new PublicKey(destination), { commitment: "confirmed" });
+    const owner = (destinationInfo.value?.data as { parsed?: { info?: { owner?: string; mint?: string } } })?.parsed?.info?.owner;
+    const destinationMint = (destinationInfo.value?.data as { parsed?: { info?: { owner?: string; mint?: string } } })?.parsed?.info?.mint;
+    if (owner !== expectedDestinationWallet || destinationMint !== expectedMint) throw new Error("Source Solana destination does not belong to settlement wallet");
+  }
 
   const { account, client } = agentWalletClient();
   if (account.address.toLowerCase() !== payment.payerWallet.toLowerCase()) throw new Error("Agent key does not match payer wallet");
@@ -48,7 +69,7 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
     where: { id: paymentId },
     data: {
       status: "SOURCE_PAYMENT_CONFIRMED",
-      events: { create: { type: "SOURCE_PAYMENT_CONFIRMED", chainId: 0, tokenAddress: "SPL", tokenSymbol: "USDC-DEV", amountBaseUnits: payment.amountBaseUnits, data: { sourceSignature, network: "solana-devnet" }, hash: sourceSignature } },
+      events: { create: { type: "SOURCE_PAYMENT_CONFIRMED", chainId: 0, tokenAddress: expectedMint, tokenSymbol: "USDC", amountBaseUnits: expectedAmount.toString(), data: { sourceSignature, network: "solana-mainnet", quoteId: quote.id }, hash: sourceSignature } },
     },
   });
 
