@@ -33,6 +33,8 @@ export const approvePurchaseRequestSchema = z.object({
   autoAccept: z.boolean().default(false),
   autoPay: z.boolean().default(false),
   expiresAt: z.string().datetime({ offset: true }),
+  quoteId: z.string().min(1).optional(),
+  route: z.enum(["ARBITRUM_DIRECT", "SOLANA_TO_ARBITRUM"]).optional(),
 });
 
 export type CreatePurchaseRequestInput = z.infer<
