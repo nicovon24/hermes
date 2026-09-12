@@ -34,6 +34,7 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
   if (!expectedAuthority) throw new Error("SOLANA_SOURCE_WALLET is not configured");
   const expectedDestinationWallet = process.env.SOLANA_SETTLEMENT_WALLET;
   if (!expectedDestinationWallet) throw new Error("SOLANA_SETTLEMENT_WALLET is not configured");
+  const configuredDestinationAccount = process.env.SOLANA_SETTLEMENT_TOKEN_ACCOUNT;
   const expectedDestination = (await getAssociatedTokenAddress(new PublicKey(expectedMint), new PublicKey(expectedDestinationWallet))).toBase58();
   const matchingTransfer = transaction.transaction.message.instructions.some((instruction) => {
     if (!("parsed" in instruction) || !instruction.parsed || typeof instruction.parsed !== "object") return false;
@@ -51,10 +52,14 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
   });
   const destination = (transferInstruction as { parsed?: { info?: { destination?: string } } })?.parsed?.info?.destination;
   if (!destination) throw new Error("Source Solana destination is missing");
-  const destinationInfo = await solana.getParsedAccountInfo(new PublicKey(destination), { commitment: "confirmed" });
-  const owner = (destinationInfo.value?.data as { parsed?: { info?: { owner?: string; mint?: string } } })?.parsed?.info?.owner;
-  const destinationMint = (destinationInfo.value?.data as { parsed?: { info?: { owner?: string; mint?: string } } })?.parsed?.info?.mint;
-  if (owner !== expectedDestinationWallet || destinationMint !== expectedMint) throw new Error("Source Solana destination does not belong to settlement wallet");
+  if (configuredDestinationAccount) {
+    if (destination !== configuredDestinationAccount) throw new Error("Source Solana destination does not belong to settlement wallet");
+  } else {
+    const destinationInfo = await solana.getParsedAccountInfo(new PublicKey(destination), { commitment: "confirmed" });
+    const owner = (destinationInfo.value?.data as { parsed?: { info?: { owner?: string; mint?: string } } })?.parsed?.info?.owner;
+    const destinationMint = (destinationInfo.value?.data as { parsed?: { info?: { owner?: string; mint?: string } } })?.parsed?.info?.mint;
+    if (owner !== expectedDestinationWallet || destinationMint !== expectedMint) throw new Error("Source Solana destination does not belong to settlement wallet");
+  }
 
   const { account, client } = agentWalletClient();
   if (account.address.toLowerCase() !== payment.payerWallet.toLowerCase()) throw new Error("Agent key does not match payer wallet");
