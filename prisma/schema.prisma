@@ -74,6 +74,9 @@ model PaymentEvent {
 
 model Quote {
   id                 String      @id @default(cuid())
+  purchaseOrderId    String?     @map("purchase_order_id")
+  acceptedOfferId    String?     @map("accepted_offer_id")
+  supplierAgentId    String?     @map("supplier_agent_id")
   sourceNetwork      String      @map("source_network")
   sourceToken        String      @map("source_token")
   sourceAmount       String      @map("source_amount")
