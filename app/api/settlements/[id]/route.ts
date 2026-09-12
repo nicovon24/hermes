@@ -4,7 +4,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   try {
     const { id } = await params;
     const { sourceSignature } = await request.json();
-    if (!sourceSignature) return Response.json({ error: "sourceSignature is required" }, { status: 400 });
+    if (typeof sourceSignature !== "string" || !sourceSignature.trim()) return Response.json({ error: "sourceSignature is required" }, { status: 400 });
     return Response.json(await settleFromSolana(id, sourceSignature));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Settlement failed";
