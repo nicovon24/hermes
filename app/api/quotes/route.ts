@@ -20,6 +20,36 @@ function baseUnitsToAmount(value: bigint): string {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const requiredFields = [
+      "purchaseOrderId",
+      "acceptedOfferId",
+      "supplierAgentId",
+      "sourceNetwork",
+      "sourceToken",
+      "destinationNetwork",
+      "destinationToken",
+    ];
+    for (const field of requiredFields) {
+      if (!body[field]) return Response.json({ error: `${field} is required` }, { status: 400 });
+    }
+
+    const acceptedOffer = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT o.id
+      FROM public.purchase_orders po
+      JOIN public.offers o ON o.id = po.offer_id
+      WHERE po.id = ${body.purchaseOrderId}::uuid
+        AND o.id = ${body.acceptedOfferId}::uuid
+        AND po.status = 'CREATED'
+        AND o.status = 'ACTIVE'
+        AND o.purchase_request_id = po.purchase_request_id
+        AND o.supplier_company_id = po.supplier_company_id
+        AND (o.valid_until IS NULL OR o.valid_until > now())
+      LIMIT 1
+    `;
+    if (acceptedOffer.length === 0) {
+      return Response.json({ error: "Purchase order does not reference an active offer" }, { status: 409 });
+    }
+
     const sourceAmount = amountToBaseUnits(body.sourceAmount);
     if (sourceAmount <= 0n) return Response.json({ error: "sourceAmount must be positive" }, { status: 400 });
 
@@ -36,6 +66,9 @@ export async function POST(request: Request) {
 
     const quote = await prisma.quote.create({
       data: {
+        purchaseOrderId: body.purchaseOrderId,
+        acceptedOfferId: body.acceptedOfferId,
+        supplierAgentId: body.supplierAgentId,
         sourceNetwork: body.sourceNetwork,
         sourceToken: body.sourceToken,
         sourceAmount: body.sourceAmount.toString(),
