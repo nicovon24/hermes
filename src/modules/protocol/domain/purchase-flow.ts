@@ -7,6 +7,7 @@ const conditions = z.object({
   maximumTotalIncludingFees: z.string().regex(/^\d+(?:\.\d{1,2})?$/).refine((v) => moneyToCents(v) > 0n),
   paymentTerms: z.string().min(1).max(200),
   settlementAsset: z.string().min(1).max(80),
+  route: z.enum(["ARBITRUM_DIRECT", "SOLANA_TO_ARBITRUM"]).optional(),
   autoPay: z.boolean(),
   mandateExpiresAt: z.iso.datetime({ offset: true }).refine((v) => new Date(v).getTime() > Date.now(), "El mandato debe vencer en el futuro."),
 });

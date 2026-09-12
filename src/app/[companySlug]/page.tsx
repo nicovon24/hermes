@@ -92,6 +92,7 @@ type PurchaseOrder = {
   payment: {
     id: string;
     status: string;
+    route: string;
     amount_base_units: string;
     tx_hash: string | null;
     last_error: string | null;
@@ -252,7 +253,7 @@ export default async function AccountPage({ params }: AccountPageProps) {
   const messages: ProtocolMessageRow[] = messageRows.map((row) => ({ id: row.id, negotiation_id: row.negotiationId, message_type: row.messageType, sender_company_id: row.senderCompanyId, recipient_company_id: row.recipientCompanyId, sent_at: row.sentAt.toISOString(), payload: row.payload as Record<string, unknown>, raw_message: row.rawMessage as Record<string, unknown>, tender_round_id: row.tenderRoundId }));
   const orders: PurchaseOrder[] = orderRows.map((row) => ({
     id: row.id, purchase_request_id: row.purchaseRequestId, buyer_company_id: row.buyerCompanyId, supplier_company_id: row.supplierCompanyId, status: row.status, currency: row.currency, total: row.total.toString(), delivery_date: row.deliveryDate.toISOString().slice(0, 10), payment_terms: row.paymentTerms, external_reference: row.externalReference, created_at: row.createdAt.toISOString(),
-    payment: row.payment ? { id: row.payment.id, status: row.payment.status, amount_base_units: row.payment.amountBaseUnits, tx_hash: row.payment.txHash, last_error: row.payment.lastError } : null,
+    payment: row.payment ? { id: row.payment.id, status: row.payment.status, route: row.payment.route, amount_base_units: row.payment.amountBaseUnits, tx_hash: row.payment.txHash, last_error: row.payment.lastError } : null,
     purchase_order_items: row.items.map((item) => ({ id: item.id, product_id: item.productId, description: item.description, unit: item.unit, quantity: item.quantity.toString(), unit_price: item.unitPrice.toString(), total: item.total.toString() })),
   }));
   const profile: CompanyProfile | null = profileRow ? { tax_id: profileRow.taxId, address_line: profileRow.addressLine, city: profileRow.city, province: profileRow.province, contact_name: profileRow.contactName, contact_email: profileRow.contactEmail, contact_phone: profileRow.contactPhone, delivery_area: profileRow.deliveryArea } : null;
@@ -400,6 +401,7 @@ export default async function AccountPage({ params }: AccountPageProps) {
                 <div className={`payment-summary ${order.payment.status === "PAYMENT_CONFIRMED" ? "payment-confirmed" : order.payment.status === "PAYMENT_FAILED" ? "payment-failed" : "payment-pending"}`}>
                   <strong>{paymentLabels[order.payment.status] ?? order.payment.status}</strong>
                   <span>{argtBaseUnitsToDisplay(order.payment.amount_base_units)} ARGt</span>
+                  <span>{order.payment.route === "SOLANA_TO_ARBITRUM" ? "Solana → Arbitrum" : "Arbitrum directo"}</span>
                   {order.payment.tx_hash ? <a href={`https://arbiscan.io/tx/${order.payment.tx_hash}`} rel="noreferrer" target="_blank">Ver en Arbiscan</a> : null}
                   {order.payment.last_error ? <details><summary>Ver motivo</summary><small>{order.payment.last_error}</small></details> : null}
                 </div>

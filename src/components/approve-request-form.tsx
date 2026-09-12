@@ -33,6 +33,13 @@ export function ApproveRequestForm({
           <input disabled={autoPay} name="settlementAsset" defaultValue={autoPay ? "ARGt" : "ARS_TOKEN"} required={!autoPay} />
         </label>
         <label>
+          Ruta de pago
+          <select defaultValue="ARBITRUM_DIRECT" name="route">
+            <option value="ARBITRUM_DIRECT">ARGt directo en Arbitrum</option>
+            <option value="SOLANA_TO_ARBITRUM">USDC-DEV en Solana → ARGt</option>
+          </select>
+        </label>
+        <label>
           El mandato vence
           <input name="mandateExpiresAt" type="datetime-local" required />
         </label>
