@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Agent {
+  id           String    @id
+  organization String
+  role         String
+  wallet       String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  payerPayments Payment[] @relation("Payer")
+  payeePayments Payment[] @relation("Payee")
+
+  @@map("agents")
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  conversationId    String @map("conversation_id")
+  payerAgentId      String @map("payer_agent_id")
+  payeeAgentId      String @map("payee_agent_id")
+  payerWallet       String @map("payer_wallet")
+  payeeWallet       String @map("payee_wallet")
+  chainId           Int    @map("chain_id")
+  tokenAddress      String @map("token_address")
+  tokenSymbol       String @default("ARGt") @map("token_symbol")
+  amountBaseUnits   String @map("amount_base_units")
+  gasUsedWei        String? @map("gas_used_wei")
+  effectiveGasPriceWei String? @map("effective_gas_price_wei")
+  gasFeeWei         String? @map("gas_fee_wei")
+  gasFeeEth         String? @map("gas_fee_eth")
+  status            PaymentStatus @default(PAYMENT_REQUESTED)
+  txHash            String?       @unique
+  externalReference String? @map("external_reference")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  payer             Agent         @relation("Payer", fields: [payerAgentId], references: [id])
+  payee             Agent         @relation("Payee", fields: [payeeAgentId], references: [id])
+  events            PaymentEvent[]
+
+  @@map("payments")
+  @@index([conversationId])
+  @@index([payerAgentId])
+  @@index([payeeAgentId])
+}
+
+model PaymentEvent {
+  id           String   @id @default(cuid())
+  paymentId   String @map("payment_id")
+  type         String
+  chainId      Int? @map("chain_id")
+  tokenAddress String? @map("token_address")
+  tokenSymbol String? @map("token_symbol")
+  amountBaseUnits String? @map("amount_base_units")
+  gasUsedWei String? @map("gas_used_wei")
+  effectiveGasPriceWei String? @map("effective_gas_price_wei")
+  gasFeeWei String? @map("gas_fee_wei")
+  gasFeeEth String? @map("gas_fee_eth")
+  data         Json
+  previousHash String? @map("previous_hash")
+  hash         String
+  createdAt    DateTime @default(now()) @map("created_at")
+  payment      Payment  @relation(fields: [paymentId], references: [id])
+
+  @@map("payment_events")
+  @@index([paymentId])
+}
+
+enum PaymentStatus {
+  PAYMENT_REQUESTED
+  PAYMENT_AUTHORIZED
+  PAYMENT_SUBMITTED
+  PAYMENT_CONFIRMED
+  PAYMENT_FAILED
+
+  @@map("payment_status")
+}

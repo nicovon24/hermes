@@ -6,11 +6,13 @@ Hermes es el protocolo **agent-to-agent** de comunicación y negociación para a
 
 Esta branch implementa la primera capa del protocolo: solicitud, autorización, envío y verificación de pagos en ARGt sobre Arbitrum One.
 
+Backend: TypeScript + Next.js + Prisma + Supabase + viem.
+
 ```text
-POST /payments
-  → POST /payments/{id}/authorize
-  → POST /payments/{id}/submit
-  → POST /payments/{id}/verify
+POST /api/payments
+  → POST /api/payments/{id}/authorize
+  → POST /api/payments/{id}/execute
+  → POST /api/payments/{id}/verify
 ```
 
 Para ejecución agent-to-agent autónoma, configurar una wallet exclusiva del agente:
@@ -25,13 +27,12 @@ Luego usar `POST /payments/{id}/execute`. El endpoint valida la wallet, respeta 
 ### Ejecutar localmente
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+npm install
+npx prisma generate
+npm run dev
 ```
 
-Documentación interactiva: `http://localhost:8000/docs`.
+Aplicación: `http://localhost:3000`.
 
 ### Ejecutar con Docker
 
