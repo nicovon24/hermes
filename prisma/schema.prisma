@@ -72,12 +72,49 @@ model PaymentEvent {
   @@index([paymentId])
 }
 
+model Quote {
+  id                 String      @id @default(cuid())
+  sourceNetwork      String      @map("source_network")
+  sourceToken        String      @map("source_token")
+  sourceAmount       String      @map("source_amount")
+  destinationNetwork String      @map("destination_network")
+  destinationToken   String      @map("destination_token")
+  destinationAmount  String      @map("destination_amount")
+  bridgeFee          String      @map("bridge_fee")
+  swapFee            String      @map("swap_fee")
+  gasFee             String      @map("gas_fee")
+  hermesFee          String      @map("hermes_fee")
+  status             QuoteStatus @default(QUOTE_CREATED)
+  expiresAt          DateTime    @map("expires_at")
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  @@map("quotes")
+  @@index([status])
+  @@index([expiresAt])
+}
+
 enum PaymentStatus {
   PAYMENT_REQUESTED
   PAYMENT_AUTHORIZED
   PAYMENT_SUBMITTED
   PAYMENT_CONFIRMED
   PAYMENT_FAILED
+  SOURCE_PAYMENT_PENDING
+  SOURCE_PAYMENT_CONFIRMED
+  DESTINATION_PAYMENT_SUBMITTED
+  DESTINATION_PAYMENT_CONFIRMED
+  SETTLED
 
   @@map("payment_status")
+}
+
+enum QuoteStatus {
+  QUOTE_CREATED
+  QUOTE_ACCEPTED
+  EXPIRED
+  REJECTED
+  SETTLED
+
+  @@map("quote_status")
 }
