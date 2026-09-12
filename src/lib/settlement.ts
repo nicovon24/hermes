@@ -4,7 +4,6 @@ import { getAssociatedTokenAddress } from "@solana/spl-token";
 import { prisma } from "@/lib/prisma";
 import { ARGt, argtAbi, agentWalletClient, publicClient } from "@/lib/chain";
 import { formatEther } from "viem";
-import { solanaAgentKeypair } from "@/lib/solana";
 
 export async function settleFromSolana(paymentId: string, sourceSignature: string) {
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
@@ -20,14 +19,15 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
 
   const transaction = await solana.getParsedTransaction(sourceSignature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
   if (!transaction) throw new Error("Source Solana transaction not found");
-  const expectedMint = process.env.SOLANA_TEST_MINT_ADDRESS;
+  const expectedMint = process.env.SOLANA_USDC_MINT || process.env.SOLANA_TEST_MINT_ADDRESS;
   if (!expectedMint) throw new Error("SOLANA_TEST_MINT_ADDRESS is not configured");
   const baseUnits = BigInt(payment.amountBaseUnits);
   const conversion = 10n ** 12n; // ARGt 18 decimals → SPL test token 6 decimals
   if (baseUnits <= 0n || baseUnits % conversion !== 0n) throw new Error("Payment amount is not representable by the Solana token decimals");
   const expectedAmount = baseUnits / conversion;
   if (expectedAmount > 18446744073709551615n) throw new Error("Payment amount exceeds SPL token range");
-  const expectedAuthority = solanaAgentKeypair().publicKey.toBase58();
+  const expectedAuthority = process.env.SOLANA_SOURCE_WALLET;
+  if (!expectedAuthority) throw new Error("SOLANA_SOURCE_WALLET is not configured");
   const expectedDestinationWallet = process.env.SOLANA_SETTLEMENT_WALLET;
   if (!expectedDestinationWallet) throw new Error("SOLANA_SETTLEMENT_WALLET is not configured");
   const expectedDestination = (await getAssociatedTokenAddress(new PublicKey(expectedMint), new PublicKey(expectedDestinationWallet))).toBase58();
