@@ -31,4 +31,14 @@ describe("app shell navigation", () => {
     expect(html).toContain("<strong>Inicio</strong>");
     expect(html).not.toContain("Stock y pedidos");
   });
+  it("exposes the tutorial from the sidebar foot and tags every tour anchor", () => {
+    const html = renderToStaticMarkup(
+      <AppShell accounts={[{ id: "buyer", slug: "cliente-demo", legalName: "Cliente Demo", kind: "BUYER" }]} automaticPaymentsAvailable={false}>
+        <main>Workspace</main>
+      </AppShell>,
+    );
+    expect(html).toMatch(/sidebar-foot[\s\S]*tour-launch[\s\S]*Ver tutorial/);
+    for (const anchor of ["negociaciones", "contexto", "autopay", "empresas"]) expect(html).toContain(`data-tour="${anchor}"`);
+    expect(html).not.toContain('class="tour"');
+  });
 });

@@ -2,6 +2,8 @@
 
 import { useId, useRef } from "react";
 
+import { CloseGlyph } from "./close-glyph";
+
 export type ContextMetric = {
   label: string;
   value: string;
@@ -71,7 +73,7 @@ export function ContextModal({
               onClick={closeDialog}
               type="button"
             >
-              ×
+              <CloseGlyph />
             </button>
           </header>
 

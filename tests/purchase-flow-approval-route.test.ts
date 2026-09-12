@@ -58,7 +58,7 @@ describe("purchase-flow recommendation approval", () => {
       orderCount: 1,
       message: "Pago aprobado. El pedido fue creado y el pago quedó confirmado.",
     });
-    expect(mock.payments).toHaveBeenCalledWith(actor, requestId);
+    expect(mock.payments).toHaveBeenCalledWith(actor, requestId, undefined, undefined, "ARBITRUM_DIRECT");
   });
 
   it("reports a created order and the exact payment error as a partial failure", async () => {

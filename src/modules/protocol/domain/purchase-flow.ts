@@ -27,7 +27,7 @@ export const suppliers = [
   { id: "00000000-0000-4000-8000-000000000103", name: "Abastecimientos Sur", color: "violet", shortName: "Sur" },
 ] as const;
 
-export type TenderPhase = "creation" | "rfq" | "initial_offer" | "counteroffer" | "final_offer" | "award" | "orders" | "payment" | "complete" | "error";
+export type TenderPhase = "creation" | "rfq" | "initial_offer" | "counteroffer" | "improved_offer" | "final_offer" | "award" | "orders" | "payment" | "complete" | "error";
 export type PublicOfferLine = { itemId: string; quantity: string; unit: string; total: string };
 export type PublicOffer = { total: string; deliveryDate: string | null; coveredProducts: number; requestedProducts: number; lines: PublicOfferLine[] };
 export type OfferChange = { amount: string; percentage: number | null; comparable: boolean };
@@ -45,10 +45,21 @@ export type TenderSummary = {
   coveredProducts: number; requestedProducts: number; pendingProducts: number;
   orders: Array<{ id: string; reference: string; supplierId: string; total: string; paymentStatus: string | null }>;
 };
+/** One turn of the agent-to-agent conversation, ready to render without the raw payload. */
+export type TenderChatMessage = {
+  role: "buyer" | "supplier";
+  label: string;
+  notes: string | null;
+  facts: Array<{ label: string; value: string }>;
+};
 export type TenderProgressEvent = {
   id: string; sequence: number; requestId: string; tenderRoundId: string | null;
   supplierId?: string; phase: TenderPhase; timestamp: string; messageId?: string;
-  direction?: "outbound" | "inbound"; metrics?: TenderMetrics;
+  direction?: "outbound" | "inbound"; metrics?: TenderMetrics; chat?: TenderChatMessage;
+  /** Which pass of the haggling this message belongs to, and how far the
+   * conversation with that distributor got: rounds vary per distributor, so the
+   * branch cannot read its progress off a fixed phase table. */
+  exchange?: number; progress?: number;
   summary?: TenderSummary; message?: string; status?: string;
   recommendation?: { supplierNames: string[]; total: string; coveredProducts: number; pendingProducts: number };
   requestItems?: Array<{ productId: string; description: string; quantity: string; unit: string }>;
@@ -60,10 +71,10 @@ export type TenderSnapshot = {
 
 export const phaseLabels: Record<TenderPhase, string> = {
   creation: "Preparando tu pedido", rfq: "Solicitud enviada", initial_offer: "Primera propuesta",
-  counteroffer: "Buscando una mejora", final_offer: "Oferta final recibida", award: "Eligiendo por producto",
+  counteroffer: "Buscando una mejora", improved_offer: "Mejoró su precio", final_offer: "Oferta final recibida", award: "Eligiendo por producto",
   orders: "Tus pedidos están listos", payment: "Estado del pago", complete: "Negociación completa", error: "Necesita revisión",
 };
-export const phaseProgress: Partial<Record<TenderPhase, number>> = { rfq: 25, initial_offer: 50, counteroffer: 75, final_offer: 100 };
+export const phaseProgress: Partial<Record<TenderPhase, number>> = { rfq: 15, initial_offer: 40, counteroffer: 55, improved_offer: 70, final_offer: 100 };
 
 export function flowInputFromForm(kind: "new" | "approve", buyerCompanyId: string, form: FormData, requestId: string, operationId: string): LaunchPurchaseFlowInput {
   const iso = (key: string) => {

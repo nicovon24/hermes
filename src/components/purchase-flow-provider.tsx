@@ -1,10 +1,11 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { flowInputFromForm, launchPurchaseFlowSchema, type LaunchPurchaseFlowInput, type TenderProgressEvent, type TenderSnapshot } from "@/modules/protocol/domain/purchase-flow";
 import { mergeProgress, readProgressStream } from "@/modules/protocol/domain/tender-progress";
 import { ENTRY_DURATION_MS, PRESENTATION_DEADLINE_MS, presentationBatchSize, presentationCadence } from "@/modules/protocol/domain/tender-presentation";
+import { CloseGlyph } from "./close-glyph";
 import { NegotiationStage } from "./negotiation-stage";
 
 type FlowContextValue = {
@@ -31,8 +32,12 @@ export function usePurchaseFlow() {
   return context;
 }
 
-export function PurchaseFlowProvider({ automaticPayments, paymentsAvailable, children }: { automaticPayments: boolean; paymentsAvailable: boolean; children: ReactNode }) {
+export function PurchaseFlowProvider({ automaticPayments, paymentsAvailable, stagePath, children }: { automaticPayments: boolean; paymentsAvailable: boolean; stagePath: string; children: ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
+  // The negotiation stage lives only on the buyer home. A launch from any
+  // other page lands there first so the animation is where the user looks.
+  const onStagePage = pathname === stagePath;
   const [events, setEvents] = useState<TenderProgressEvent[]>([]);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [buyerCompanyId, setBuyerCompanyId] = useState<string | null>(null);
@@ -139,6 +144,7 @@ export function PurchaseFlowProvider({ automaticPayments, paymentsAvailable, chi
     setEvents([]); setError(null); setSlow(false); setPending(true); setStreaming(true); setWatching(false); setAnimateEntrance(true);
     setRequestId(input.requestId); setStartedAt(begun.current);
     setBuyerCompanyId(input.buyerCompanyId);
+    if (!onStagePage) router.push(stagePath, { scroll: true });
     try {
       const response = await fetch("/api/purchase-flow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
       if (!response.ok || !response.body) {
@@ -156,7 +162,7 @@ export function PurchaseFlowProvider({ automaticPayments, paymentsAvailable, chi
       if (activeId.current !== input.requestId) busy.current = false;
       if (mounted.current) { setStreaming(false); if (!queue.current.length) setPending(false); }
     }
-  }, [enqueue, recover]);
+  }, [enqueue, recover, onStagePage, router, stagePath]);
 
   const launchForm = useCallback(async (kind: "new" | "approve", companyId: string, data: FormData, existingId?: string) => {
     if (busy.current) return;
@@ -173,7 +179,7 @@ export function PurchaseFlowProvider({ automaticPayments, paymentsAvailable, chi
   function navigateTo(section: "pedidos" | "negociaciones") {
     setDestination(section);
     startNavigation(() => {
-      router.push(`/cliente-demo#${section}`, { scroll: false });
+      router.push(section === "negociaciones" ? "/protocol#negociaciones" : `/cliente-demo#${section}`, { scroll: false });
       router.refresh();
     });
   }
@@ -259,17 +265,17 @@ export function PurchaseFlowProvider({ automaticPayments, paymentsAvailable, chi
     >
       <span aria-hidden="true" className="approval-notice-icon">{approvalNotice.tone === "success" ? "✓" : "!"}</span>
       <div><strong>{approvalNotice.title}</strong><p>{approvalNotice.message}</p></div>
-      <button aria-label="Cerrar aviso" onClick={() => setApprovalNotice(null)} type="button">×</button>
+      <button aria-label="Cerrar aviso" onClick={() => setApprovalNotice(null)} type="button"><CloseGlyph /></button>
     </aside> : null}
-    {requestId ? <NegotiationStage key={`${requestId}:${startedAt}`} requestId={requestId} buyerCompanyId={buyerCompanyId} paymentsAvailable={paymentsAvailable} events={events} pending={pending} streaming={streaming || watching} slow={slow} error={error} recovering={recovering} approving={approving} approvalMode={approvalMode} animateEntrance={animateEntrance}
+    {requestId && onStagePage ? <NegotiationStage key={`${requestId}:${startedAt}`} requestId={requestId} buyerCompanyId={buyerCompanyId} paymentsAvailable={paymentsAvailable} events={events} pending={pending} streaming={streaming || watching} slow={slow} error={error} recovering={recovering} approving={approving} approvalMode={approvalMode} automaticPayments={automaticPayments} animateEntrance={animateEntrance}
       onApprove={(payNow) => { void approveRecommendation(payNow); }}
-      onReview={() => { void recover(requestId, true); }} onOrders={() => navigateTo("pedidos")}
-      onConversations={() => navigateTo("negociaciones")}
+      onOrders={() => navigateTo("pedidos")}
+      onNegotiations={() => navigateTo("negociaciones")}
       onRetry={() => { if (lastInput.current) {
         const input = lastInput.current;
         const startedConversation = events.some((event) => event.phase === "rfq");
         void launch(startedConversation ? { kind: "retry", buyerCompanyId: input.buyerCompanyId, requestId, operationId: crypto.randomUUID() } : { ...input, operationId: crypto.randomUUID() });
-      } else { router.push("/cliente-demo#negociaciones"); router.refresh(); } }}
+      } else { router.push("/protocol#negociaciones"); router.refresh(); } }}
       onDismiss={dismiss} /> : null}
     {children}
   </FlowContext.Provider>;
