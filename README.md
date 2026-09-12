@@ -1,36 +1,95 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Hermes
 
-## Getting Started
+Negociación automática entre agentes de compra y venta de insumos.
 
-First, run the development server:
+Un comercio le pide a su agente comprador que reponga stock. El agente abre 3
+negociaciones en paralelo con 3 agentes vendedores (cada uno con su propio
+contexto: stock, márgenes, objetivo de rotación). Compiten en precio, plazo de
+entrega, plazo de pago y flete — no solo precio. Al final se comparan las 3
+ofertas normalizadas y se recomienda una con justificación.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Problema
+
+Consolidación y validación de precios, y optimización del capital inmovilizado
+en stock para comercios. Hoy eso se hace por WhatsApp, con listas de precios
+desactualizadas, sin historial y sin ninguna métrica de si conviene comprar
+ahora o esperar.
+
+## Estado del proyecto
+
+**Scaffolding inicial.** La UI y los requerimientos de cada vista todavía se
+están definiendo — existe un modelo/mockup en HTML como referencia visual
+(layout, look and feel), pero qué contiene cada vista (componentes exactos,
+datos, interacciones) se va a ir precisando a lo largo del desarrollo. No
+tomar lo que hay hoy como spec funcional cerrada.
+
+## Stack
+
+| Capa                       | Elección                                                          |
+| -------------------------- | ----------------------------------------------------------------- |
+| Frontend                   | Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui          |
+| Estado servidor            | TanStack Query                                                    |
+| Forms                      | React Hook Form + Zod                                             |
+| Backend                    | Server Actions (dentro del mismo proyecto Next, sin API separada) |
+| Base de datos              | Prisma (aún sin modelos definidos)                                |
+| Gráficos                   | recharts                                                          |
+| Git hooks                  | Husky + lint-staged                                               |
+| CI                         | GitHub Actions                                                    |
+
+## Enfoque de datos: mock primero, API real después
+
+Todo el desarrollo arranca con datos mockeados en `lib/mock-data.ts`. Las
+server actions de `actions/` devuelven ese mock al principio, con la misma
+forma que después va a tener la respuesta real. Cuando el protocolo de
+negociación y la lógica de agentes estén listos, se reemplaza el contenido de
+la action (mock → Prisma según corresponda) sin tocar `features/` ni
+`components/`.
+
+## Estructura
+
+```
+hermes/
+├── src/
+│   ├── app/            # rutas — Negotiation, Negotiations (historial), Dashboard, Settings
+│   ├── components/     # presentación, por dominio
+│   ├── features/       # hooks + lógica por dominio
+│   ├── actions/        # server actions ("use server")
+│   ├── lib/            # mock-data, utils
+│   └── types/          # tipos del protocolo (a definir)
+├── prisma/
+│   └── schema.prisma   # datasource + generator, sin modelos todavía
+├── .github/workflows/
+│   └── ci.yml
+└── README.md
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Nota de nombres: la vista principal se llama **Negotiation** (no "chat") — es
+la conversación con el agente comprador que dispara las negociaciones en
+paralelo. Es distinta de `negotiations/` (historial y detalle de negociaciones
+pasadas) y de `negotiation-settings/` (tab de settings).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Arranque rápido
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pnpm install
+pnpm dev        # http://localhost:3000
+```
 
-## Learn More
+El proyecto arranca contra datos mockeados (`NEXT_PUBLIC_USE_MOCKS=true`): no
+necesita Postgres levantado para desarrollarse.
 
-To learn more about Next.js, take a look at the following resources:
+## Flujo de trabajo
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Ramas base `frontend` y `backend`, colgando de `main`; de ahí pueden salir
+ramas puntuales por feature. Nunca se commitea directo a `main`. Ver
+[CONTRIBUTING.md](./CONTRIBUTING.md) para el detalle y
+[WORKFLOW.md](./WORKFLOW.md) para el orden de construcción de una feature.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Documentación
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Doc                                  | Qué contiene                                                           |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Flujo end-to-end y decisiones de stack |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | Ramas, PRs, Husky, GitHub Actions, convenciones de código              |
+| [AGENTS.md](./AGENTS.md)             | Convenciones del repo para asistentes de código (Codex/Claude/Copilot) |
+| [WORKFLOW.md](./WORKFLOW.md)         | Orden concreto para construir una feature nueva                        |
