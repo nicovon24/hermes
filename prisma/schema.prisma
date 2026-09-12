@@ -36,7 +36,7 @@ model Payment {
   gasFeeWei         String? @map("gas_fee_wei")
   gasFeeEth         String? @map("gas_fee_eth")
   status            PaymentStatus @default(PAYMENT_REQUESTED)
-  txHash            String?       @unique
+  txHash            String?       @unique @map("tx_hash")
   externalReference String? @map("external_reference")
   createdAt         DateTime      @default(now()) @map("created_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
