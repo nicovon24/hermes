@@ -60,6 +60,12 @@ describe("progress replay", () => {
     await readProgressStream(new ReadableStream({ start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); } }), (event) => received.push(event));
     expect(received).toEqual(input);
   });
+  it("ignores the transport connection prelude", async () => {
+    const input = `${JSON.stringify({ type: "connected", requestId: "request", padding: " ".repeat(1024) })}\n${JSON.stringify(events[0])}\n`;
+    const received: TenderProgressEvent[] = [];
+    await readProgressStream(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(input)); controller.close(); } }), (event) => received.push(event));
+    expect(received).toEqual([events[0]]);
+  });
   it("retains committed events when a stream is interrupted", async () => {
     const received: TenderProgressEvent[] = [];
     const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(`${JSON.stringify(events[0])}\n{`)); controller.close(); } });

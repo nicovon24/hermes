@@ -11,6 +11,21 @@ import { createPurchaseRequest, approvePurchaseRequest } from "./purchase-reques
 import { runMultiProductTenderAgents } from "./multi-product-tender";
 import { getTenderSnapshot } from "./tender-snapshot";
 
+async function persistFlowEvent(data: Prisma.DomainEventCreateArgs["data"]) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await prisma.domainEvent.create({ data });
+      return;
+    } catch (error) {
+      if (attempt === 2) {
+        console.error("Could not persist purchase-flow event", error);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+}
+
 export async function launchPurchaseFlow(unsafeInput: LaunchPurchaseFlowInput, onEvent: (event: TenderProgressEvent) => void = () => {}) {
   const input = launchPurchaseFlowSchema.parse(unsafeInput);
   const actor = await requireBuyerActor(input.buyerCompanyId);
@@ -32,7 +47,11 @@ export async function launchPurchaseFlow(unsafeInput: LaunchPurchaseFlowInput, o
     if (openRun) throw new DomainError("Este pedido ya está en curso. Revisá su último estado antes de reintentar.", "CONFLICT", 409);
     await tx.domainEvent.create({ data: { id: input.operationId, aggregateId: input.requestId, aggregateType: "purchase_request", eventType: "tender.flow.started", payload: { operationId: input.operationId } } });
     return true;
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }, {
+    isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+    maxWait: 10_000,
+    timeout: 30_000,
+  });
 
   const seen = new Set<string>();
   let sequence = 0;
@@ -64,20 +83,22 @@ export async function launchPurchaseFlow(unsafeInput: LaunchPurchaseFlowInput, o
     // A retry of uncovered products starts a new round. Do not replay the
     // previous round's order summary as if it belonged to the new launch.
     if (input.kind !== "retry") await publish();
-    await runMultiProductTenderAgents(actor, input.requestId, { onProgress: publish, operationId: input.operationId });
+    await runMultiProductTenderAgents(actor, input.requestId, { onProgress: publish, operationId: input.operationId, createOrders: false });
     await publish();
-    // Orders have already reached the browser before waiting for payment receipts.
-    await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish, input.kind === "retry" ? "ARBITRUM_DIRECT" : input.conditions.route ?? "ARBITRUM_DIRECT");
-    await publish();
+    const createdOrders = await prisma.purchaseOrder.count({ where: { purchaseRequestId: input.requestId } });
+    if (createdOrders > 0) {
+      await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish);
+      await publish();
+    }
     const settled = await prisma.purchaseRequest.findUniqueOrThrow({ where: { id: input.requestId } });
     if (settled.status === "PAYMENT_REVIEW_REQUIRED") throw new DomainError("Los pedidos ya están disponibles. Revisá los pagos que no pudieron confirmarse antes de volver a ejecutarlos.", "CONFLICT", 409);
   } catch (error) {
     failed = true;
     const message = error instanceof DomainError ? error.message : "No se pudo completar el proceso. Podés revisar lo confirmado y reintentar.";
     console.error("Purchase flow failed", error);
-    await prisma.domainEvent.create({ data: { aggregateId: input.requestId, aggregateType: "purchase_request", eventType: "tender.flow.error", payload: { operationId: input.operationId, message } } });
+    await persistFlowEvent({ aggregateId: input.requestId, aggregateType: "purchase_request", eventType: "tender.flow.error", payload: { operationId: input.operationId, message } });
   } finally {
-    await prisma.domainEvent.create({ data: { aggregateId: input.requestId, aggregateType: "purchase_request", eventType: "tender.flow.finished", payload: { operationId: input.operationId, status: failed ? "FAILED" : "SUCCEEDED" } } });
+    await persistFlowEvent({ aggregateId: input.requestId, aggregateType: "purchase_request", eventType: "tender.flow.finished", payload: { operationId: input.operationId, status: failed ? "FAILED" : "SUCCEEDED" } });
     // A failed observer must never roll back or repeat a committed business action.
     publication = publication.catch(() => {});
     await publish();

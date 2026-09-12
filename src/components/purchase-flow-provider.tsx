@@ -10,25 +10,40 @@ import { NegotiationStage } from "./negotiation-stage";
 type FlowContextValue = {
   launch: (input: LaunchPurchaseFlowInput) => Promise<void>;
   launchForm: (kind: "new" | "approve", companyId: string, data: FormData, requestId?: string) => Promise<void>;
-  pending: boolean; error: string | null;
+  automaticPayments: boolean; pending: boolean; error: string | null;
+};
+type ApprovalNotice = {
+  tone: "success" | "error";
+  title: string;
+  message: string;
+};
+type ApprovalResponse = {
+  ok?: boolean;
+  outcome?: "order_created" | "payment_confirmed" | "payment_failed" | "order_failed";
+  orderCreated?: boolean;
+  orderCount?: number;
+  message?: string;
 };
 const FlowContext = createContext<FlowContextValue | null>(null);
-const storageKey = "hermes-flow-v1";
 export function usePurchaseFlow() {
   const context = useContext(FlowContext);
   if (!context) throw new Error("PurchaseFlowProvider is required");
   return context;
 }
 
-export function PurchaseFlowProvider({ children }: { children: ReactNode }) {
+export function PurchaseFlowProvider({ automaticPayments, paymentsAvailable, children }: { automaticPayments: boolean; paymentsAvailable: boolean; children: ReactNode }) {
   const router = useRouter();
   const [events, setEvents] = useState<TenderProgressEvent[]>([]);
   const [requestId, setRequestId] = useState<string | null>(null);
+  const [buyerCompanyId, setBuyerCompanyId] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [slow, setSlow] = useState(false);
   const [recovering, setRecovering] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [approvalMode, setApprovalMode] = useState<"order" | "payment" | null>(null);
+  const [approvalNotice, setApprovalNotice] = useState<ApprovalNotice | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [watching, setWatching] = useState(false);
   const [animateEntrance, setAnimateEntrance] = useState(false);
@@ -91,20 +106,14 @@ export function PurchaseFlowProvider({ children }: { children: ReactNode }) {
   }, [enqueue]);
 
   useEffect(() => {
+    // React Strict Mode mounts, cleans up and mounts effects again in dev.
+    // Restore the guard on every setup or the live stream gets discarded.
     mounted.current = true;
-    const restore = setTimeout(() => {
-      try {
-        const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? "null") as { requestId?: string; startedAt?: number } | null;
-        if (saved?.requestId && /^[\da-f-]{36}$/i.test(saved.requestId)) {
-          activeId.current = saved.requestId;
-          begun.current = saved.startedAt ?? Date.now();
-          setRequestId(saved.requestId); setStartedAt(begun.current); setSlow(true);
-          void recover(saved.requestId, true);
-        }
-      } catch { /* Storage can be unavailable in private browsing. */ }
-    }, 0);
-    return () => { mounted.current = false; clearTimeout(restore); if (timer.current) clearTimeout(timer.current); };
-  }, [recover]);
+    return () => {
+      mounted.current = false;
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
 
   const completed = events.some((event) => event.phase === "complete");
   useEffect(() => {
@@ -129,7 +138,7 @@ export function PurchaseFlowProvider({ children }: { children: ReactNode }) {
     timer.current = null;
     setEvents([]); setError(null); setSlow(false); setPending(true); setStreaming(true); setWatching(false); setAnimateEntrance(true);
     setRequestId(input.requestId); setStartedAt(begun.current);
-    try { sessionStorage.setItem(storageKey, JSON.stringify({ requestId: input.requestId, startedAt: begun.current })); } catch {}
+    setBuyerCompanyId(input.buyerCompanyId);
     try {
       const response = await fetch("/api/purchase-flow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
       if (!response.ok || !response.body) {
@@ -168,6 +177,56 @@ export function PurchaseFlowProvider({ children }: { children: ReactNode }) {
       router.refresh();
     });
   }
+  async function approveRecommendation(payNow: boolean) {
+    if (!requestId || approving) return;
+    setApproving(true);
+    setApprovalMode(payNow ? "payment" : "order");
+    setApprovalNotice(null);
+    setError(null);
+    try {
+      const response = await fetch(`/api/purchase-flow/${requestId}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payNow }),
+      });
+      const result = await response.json() as ApprovalResponse;
+      if (!response.ok) {
+        const message = result.message ?? "No se pudo crear el pedido.";
+        setError(message);
+        setApprovalNotice({ tone: "error", title: "No se creó el pedido", message });
+        return;
+      }
+      await recover(requestId, true);
+      if (result.outcome === "payment_failed") {
+        const message = result.message ?? "El pedido fue creado, pero el pago no pudo confirmarse.";
+        setError(message);
+        setApprovalNotice({ tone: "error", title: "Pedido creado · pago no confirmado", message });
+      } else {
+        setApprovalNotice({
+          tone: "success",
+          title: result.outcome === "payment_confirmed" ? "Pago aprobado" : "Pedido creado",
+          message: result.message ?? (payNow
+            ? "El pedido fue creado y el pago quedó confirmado."
+            : "El pedido fue creado correctamente."),
+        });
+      }
+      if (
+        result.outcome === "payment_confirmed" &&
+        !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 1400));
+      }
+      navigateTo("pedidos");
+    } catch (cause) {
+      console.error("Could not read the approval result", cause);
+      const message = "No pudimos confirmar si el pedido se creó. Revisá la sección Pedidos antes de reintentar.";
+      setError(message);
+      setApprovalNotice({ tone: "error", title: "No pudimos confirmar la operación", message });
+    } finally {
+      setApproving(false);
+      setApprovalMode(null);
+    }
+  }
   useEffect(() => {
     if (!destination || navigating) return;
     const frame = requestAnimationFrame(() => {
@@ -182,15 +241,28 @@ export function PurchaseFlowProvider({ children }: { children: ReactNode }) {
     return () => cancelAnimationFrame(frame);
   }, [destination, navigating]);
   function dismiss() {
-    setRequestId(null); activeId.current = null;
+    setRequestId(null); setBuyerCompanyId(null); activeId.current = null;
     if (timer.current) clearTimeout(timer.current);
     timer.current = null; queue.current = []; setPending(false);
-    try { sessionStorage.removeItem(storageKey); } catch {}
   }
 
-  const context = useMemo(() => ({ launch, launchForm, pending, error }), [launch, launchForm, pending, error]);
+  const context = useMemo(
+    () => ({ launch, launchForm, automaticPayments, pending, error }),
+    [launch, launchForm, automaticPayments, pending, error],
+  );
   return <FlowContext.Provider value={context}>
-    {requestId ? <NegotiationStage key={`${requestId}:${startedAt}`} requestId={requestId} events={events} pending={pending} streaming={streaming || watching} slow={slow} error={error} recovering={recovering} animateEntrance={animateEntrance}
+    {approvalNotice ? <aside
+      aria-atomic="true"
+      aria-live={approvalNotice.tone === "error" ? "assertive" : "polite"}
+      className={`approval-notice ${approvalNotice.tone}`}
+      role={approvalNotice.tone === "error" ? "alert" : "status"}
+    >
+      <span aria-hidden="true" className="approval-notice-icon">{approvalNotice.tone === "success" ? "✓" : "!"}</span>
+      <div><strong>{approvalNotice.title}</strong><p>{approvalNotice.message}</p></div>
+      <button aria-label="Cerrar aviso" onClick={() => setApprovalNotice(null)} type="button">×</button>
+    </aside> : null}
+    {requestId ? <NegotiationStage key={`${requestId}:${startedAt}`} requestId={requestId} buyerCompanyId={buyerCompanyId} paymentsAvailable={paymentsAvailable} events={events} pending={pending} streaming={streaming || watching} slow={slow} error={error} recovering={recovering} approving={approving} approvalMode={approvalMode} animateEntrance={animateEntrance}
+      onApprove={(payNow) => { void approveRecommendation(payNow); }}
       onReview={() => { void recover(requestId, true); }} onOrders={() => navigateTo("pedidos")}
       onConversations={() => navigateTo("negociaciones")}
       onRetry={() => { if (lastInput.current) {

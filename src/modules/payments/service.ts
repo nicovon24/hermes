@@ -13,7 +13,7 @@ import {
   ARBITRUM_CHAIN_ID,
   ARGT_ADDRESS,
   ARGT_SYMBOL,
-  arsToArgtBaseUnits,
+  arsToDemoArgtBaseUnits,
   paymentAgentId,
   paymentEventHash,
   runSequentially,
@@ -222,7 +222,7 @@ function assertWalletsAndAmounts(orders: PaymentOrder[]) {
         409,
       );
     }
-    const amount = arsToArgtBaseUnits(order.total.toFixed(2));
+    const amount = arsToDemoArgtBaseUnits(order.total.toFixed(2));
     if (amount <= 0n || amount > environment.maxPaymentBaseUnits) {
       throw new DomainError(
         `Payment limit exceeded for order ${order.externalReference}`,
@@ -556,7 +556,7 @@ export async function runAutomaticPaymentsForPurchaseRequest(
 ) {
   const onProgress = async () => { try { await observer?.(); } catch (error) { console.error("Payment progress observer failed", error); } };
   const plan = await loadPaymentPlan(purchaseRequestId);
-  if (!plan) return { attempted: 0, confirmed: 0, skipped: true };
+  if (!plan) return { attempted: 0, confirmed: 0, skipped: true, error: null };
   if (plan.request.buyerCompanyId !== actor.companyId) {
     throw new DomainError("Only the buyer can execute payments", "FORBIDDEN", 403);
   }
@@ -592,15 +592,60 @@ export async function runAutomaticPaymentsForPurchaseRequest(
     await executePayment(payment, order, gateway, confirmations, onProgress);
   });
   if (sequence.failedIndex !== null) {
+    const message = sequence.error instanceof Error
+      ? sequence.error.message
+      : "Automatic payment failed";
     await markRequestForReview(
       purchaseRequestId,
       actor.actorId,
-      sequence.error instanceof Error ? sequence.error.message : "Automatic payment failed",
+      message,
     );
-    return { attempted: intents.length, confirmed: sequence.completed, skipped: false };
+    return {
+      attempted: intents.length,
+      confirmed: sequence.completed,
+      skipped: false,
+      error: message,
+    };
   }
   await finishPaymentState(purchaseRequestId);
-  return { attempted: intents.length, confirmed: sequence.completed, skipped: false };
+  return { attempted: intents.length, confirmed: sequence.completed, skipped: false, error: null };
+}
+
+export async function payPurchaseOrder(
+  actor: Actor,
+  purchaseOrderId: string,
+  providedGateway?: PaymentGateway,
+) {
+  const order = await prisma.purchaseOrder.findUnique({
+    where: { id: purchaseOrderId },
+    include: {
+      buyer: { select: { legalName: true } },
+      supplier: { select: { legalName: true } },
+      payment: true,
+    },
+  });
+  if (!order || order.buyerCompanyId !== actor.companyId) {
+    throw new DomainError("Purchase order not found", "NOT_FOUND", 404);
+  }
+  if (order.payment?.status === PaymentStatus.PAYMENT_CONFIRMED) {
+    return order.payment;
+  }
+  if (order.payment && order.payment.status !== PaymentStatus.PAYMENT_AUTHORIZED) {
+    throw new DomainError(
+      "Este pago requiere conciliación antes de poder reintentarlo",
+      "CONFLICT",
+      409,
+    );
+  }
+
+  const gateway = providedGateway ?? new ViemPaymentGateway();
+  const confirmations = paymentEnv().requiredConfirmations;
+  const paymentOrder = order as PaymentOrder;
+  const prepared = await preflightPayments([paymentOrder], gateway);
+  const [{ payment }] = await createPaymentIntents(prepared);
+  const confirmed = await executePayment(payment, paymentOrder, gateway, confirmations);
+  await finishPaymentState(order.purchaseRequestId);
+  return confirmed;
 }
 
 export async function reviewAutomaticPayments(

@@ -46,34 +46,35 @@ function salesWindow(sales: Sale[], recentDays: number, previousDays: number) {
 
 export async function getBuyerProductContexts(
   buyerCompanyId: string,
-  productExternalIds: string[],
+  productExternalIds?: string[],
 ) {
-  const requestedIds = [...new Set(productExternalIds)];
-  if (requestedIds.length === 0) return [];
+  const requestedIds = productExternalIds ? [...new Set(productExternalIds)] : null;
+  if (requestedIds?.length === 0) return [];
   const salesBoundary = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
   const [products, objective, allStock, sales] = await Promise.all([
     prisma.product.findMany({
-      where: { companyId: buyerCompanyId, externalId: { in: requestedIds } },
+      where: { companyId: buyerCompanyId, ...(requestedIds ? { externalId: { in: requestedIds } } : {}) },
       select: { id: true, externalId: true, name: true, unit: true, unitCost: true },
     }),
     prisma.companyObjective.findUnique({ where: { companyId: buyerCompanyId } }),
     prisma.inventorySnapshot.findMany({
       where: { companyId: buyerCompanyId },
       orderBy: { observedAt: "desc" },
+      distinct: ["productId"],
       include: { product: { select: { unitCost: true } } },
     }),
     prisma.salesEvent.findMany({
       where: {
         companyId: buyerCompanyId,
         soldAt: { gte: salesBoundary },
-        product: { externalId: { in: requestedIds } },
+        ...(requestedIds ? { product: { externalId: { in: requestedIds } } } : {}),
       },
       orderBy: { soldAt: "desc" },
       select: { productId: true, quantity: true, unitPrice: true, soldAt: true },
     }),
   ]);
   const productsByExternalId = new Map(products.map((product) => [product.externalId, product]));
-  if (requestedIds.some((externalId) => !productsByExternalId.has(externalId))) {
+  if (requestedIds?.some((externalId) => !productsByExternalId.has(externalId))) {
     throw new DomainError("El cliente no tiene contexto para ese producto", "NOT_FOUND", 404);
   }
   const latestStockByProduct = new Map<string, (typeof allStock)[number]>();
@@ -90,7 +91,7 @@ export async function getBuyerProductContexts(
     rows.push(sale);
     salesByProduct.set(sale.productId, rows);
   }
-  return requestedIds.map((productExternalId) => {
+  return (requestedIds ?? products.map(({ externalId }) => externalId)).map((productExternalId) => {
     const product = productsByExternalId.get(productExternalId)!;
     const stock = latestStockByProduct.get(product.id);
     const window = salesWindow((salesByProduct.get(product.id) ?? []) as Sale[], 30, 30);
@@ -146,6 +147,7 @@ export async function getSupplierProductContexts(
     prisma.inventorySnapshot.findMany({
       where: { companyId: { in: supplierIds }, productId: { in: productIds } },
       orderBy: { observedAt: "desc" },
+      distinct: ["companyId", "productId"],
       select: { companyId: true, productId: true, onHand: true, reserved: true, inTransit: true },
     }),
     prisma.salesEvent.findMany({

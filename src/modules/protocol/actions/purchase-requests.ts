@@ -11,8 +11,10 @@ import {
   createPurchaseRequest,
 } from "@/modules/protocol/services/purchase-requests";
 import { launchPurchaseFlow } from "@/modules/protocol/services/purchase-flow";
+import { approveAvailableTenderRecommendation } from "@/modules/protocol/services/multi-product-tender";
 import { flowInputFromForm, type LaunchPurchaseFlowInput } from "@/modules/protocol/domain/purchase-flow";
 import {
+  payPurchaseOrder,
   reviewAutomaticPayments,
 } from "@/modules/payments/service";
 
@@ -114,6 +116,41 @@ export async function reviewAutomaticPaymentsAction(
     await reviewAutomaticPayments(actor, purchaseRequestId, retryPaymentId);
     revalidateCompanyWorkspaces();
     return { ok: true, message: "Conciliación completada. Los pagos confirmados no fueron reenviados." };
+  } catch (error) {
+    return { ok: false, message: toDomainError(error).message };
+  }
+}
+
+export async function payPurchaseOrderAction(
+  buyerCompanyId: string,
+  purchaseOrderId: string,
+  _previousState: PurchaseActionState,
+): Promise<PurchaseActionState> {
+  void _previousState;
+  try {
+    const actor = await requireBuyerActor(buyerCompanyId);
+    await payPurchaseOrder(actor, purchaseOrderId);
+    revalidateCompanyWorkspaces();
+    return { ok: true, message: "Pago confirmado." };
+  } catch (error) {
+    return { ok: false, message: toDomainError(error).message };
+  }
+}
+
+export async function approveTenderRecommendationAction(
+  buyerCompanyId: string,
+  purchaseRequestId: string,
+  _previousState: PurchaseActionState,
+): Promise<PurchaseActionState> {
+  void _previousState;
+  try {
+    const actor = await requireBuyerActor(buyerCompanyId);
+    const result = await approveAvailableTenderRecommendation(actor, purchaseRequestId);
+    revalidateCompanyWorkspaces();
+    return {
+      ok: true,
+      message: `${result.orders.length} ${result.orders.length === 1 ? "pedido aprobado" : "pedidos aprobados"}.`,
+    };
   } catch (error) {
     return { ok: false, message: toDomainError(error).message };
   }

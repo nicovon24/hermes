@@ -24,7 +24,7 @@ export async function startTenderRound(
       if (!request || request.buyerCompanyId !== buyerCompanyId) {
         throw new DomainError("Purchase request not found", "NOT_FOUND", 404);
       }
-      if (!["NEGOTIATING", "PARTIALLY_ORDERED"].includes(request.status)) {
+      if (!["NEGOTIATING", "RECOMMENDED", "PARTIALLY_ORDERED"].includes(request.status)) {
         throw new DomainError(`Tender round cannot start from ${request.status}`, "CONFLICT", 409);
       }
       const existing = await tx.tenderRound.findFirst({
@@ -301,5 +301,6 @@ export async function recordSplitAwardAndOrders(input: {
       ]);
       return { status, pendingItems, orders: roundOrders };
     },
+    { maxWait: 10_000, timeout: 30_000 },
   );
 }

@@ -4,6 +4,7 @@ export const ARBITRUM_CHAIN_ID = 42161;
 export const ARGT_ADDRESS = "0x59863989d080B22476DB95656d0C3CC18be92214" as const;
 export const ARGT_SYMBOL = "ARGt";
 export const ARGT_DECIMALS = 18;
+export const DEMO_ARS_PER_ARGT = 1_000n;
 
 export function arsToArgtBaseUnits(value: string) {
   const normalized = value.trim();
@@ -15,6 +16,11 @@ export function arsToArgtBaseUnits(value: string) {
     BigInt(whole) * 10n ** BigInt(ARGT_DECIMALS) +
     BigInt(fraction.padEnd(ARGT_DECIMALS, "0"))
   );
+}
+
+/** Proof-of-concept funding scale: ARS 1,000 commercial = ARGt 1 on-chain. */
+export function arsToDemoArgtBaseUnits(value: string) {
+  return arsToArgtBaseUnits(value) / DEMO_ARS_PER_ARGT;
 }
 
 export function argtBaseUnitsToDisplay(value: string) {

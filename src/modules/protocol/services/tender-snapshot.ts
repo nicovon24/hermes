@@ -12,10 +12,15 @@ export async function getTenderSnapshot(requestId: string, buyerCompanyId: strin
   });
   if (!request || request.buyerCompanyId !== buyerCompanyId) throw new DomainError("No se encontró el pedido.", "NOT_FOUND", 404);
   const round = request.tenderRounds[0] ?? null;
-  const [messages, orders, logs] = await Promise.all([
+  const [messages, orders, logs, recommendationRun] = await Promise.all([
     prisma.negotiationMessage.findMany({ where: { purchaseRequestId: requestId, ...(round ? { OR: [{ tenderRoundId: round.id }, { messageType: "payment_status" }] } : {}) }, orderBy: [{ sentAt: "asc" }, { id: "asc" }], include: { negotiation: { select: { supplierCompanyId: true } } } }),
     prisma.purchaseOrder.findMany({ where: { purchaseRequestId: requestId, ...(round ? { tenderRoundId: round.id } : {}) }, include: { items: true, payment: true }, orderBy: { externalReference: "asc" } }),
     prisma.domainEvent.findMany({ where: { aggregateId: requestId, eventType: { startsWith: "tender.flow." } }, orderBy: [{ occurredAt: "asc" }, { id: "asc" }] }),
+    prisma.agentRun.findFirst({
+      where: { purchaseRequestId: requestId, kind: "OFFER_RECOMMENDATION", status: "SUCCEEDED" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, createdAt: true, output: true },
+    }),
   ]);
   const items = round ? request.items.filter((item) => round.requestItemIds.includes(item.id)) : request.items;
   const phases: Record<string, number> = { request_for_quote: 0, offer: 1, counteroffer: 2, final_offer: 3, purchase_order: 4, payment_status: 5 };
@@ -41,13 +46,31 @@ export async function getTenderSnapshot(requestId: string, buyerCompanyId: strin
     pendingProducts: items.filter((item) => item.status === "PENDING").length,
     orders: orders.map((o) => ({ id: o.id, reference: o.externalReference, supplierId: o.supplierCompanyId, total: o.total.toString(), paymentStatus: o.payment?.status ?? null })),
   };
+  const recommendationOutput = recommendationRun?.output && typeof recommendationRun.output === "object"
+    ? recommendationRun.output as Record<string, unknown>
+    : null;
+  const recommendationAllocations = recommendationOutput && Array.isArray(recommendationOutput.allocations)
+    ? recommendationOutput.allocations as Array<Record<string, unknown>>
+    : [];
+  const recommendation = recommendationAllocations.length > 0 ? {
+    supplierNames: [...new Set(recommendationAllocations.map((allocation) => String(allocation.supplierName ?? "Distribuidor")))],
+    total: String(recommendationOutput?.grandTotal ?? "0.00"),
+    coveredProducts: recommendationAllocations.length,
+    pendingProducts: Array.isArray(recommendationOutput?.pendingItems) ? recommendationOutput.pendingItems.length : 0,
+  } : null;
+  const presentationSummary: TenderSummary = recommendation && orders.length === 0 ? {
+    ...summary,
+    total: recommendation.total,
+    coveredProducts: recommendation.coveredProducts,
+    pendingProducts: recommendation.pendingProducts,
+  } : summary;
   const events: TenderProgressEvent[] = [{
     id: `creation:${round?.id ?? request.id}`, sequence: 0, requestId, tenderRoundId: round?.id ?? null,
     phase: "creation", timestamp: round?.createdAt.toISOString() ?? request.createdAt.toISOString(),
   }, ...messageProgress(requestId, mapped, items.length)];
-  if (mapped.filter((m) => m.messageType === "final_offer").length === 3) events.push({
-    id: `award:${round?.id}`, sequence: 0, requestId, tenderRoundId: round?.id ?? null,
-    phase: "award", timestamp: mapped.filter((m) => m.messageType === "final_offer").at(-1)!.timestamp,
+  if (recommendation && recommendationRun) events.push({
+    id: `award:${recommendationRun.id}`, sequence: 0, requestId, tenderRoundId: round?.id ?? null,
+    phase: "award", timestamp: recommendationRun.createdAt.toISOString(), recommendation,
   });
   if (round && round.status !== "OPEN") events.push({
     id: `orders:${round.id}`, sequence: 0, requestId, tenderRoundId: round.id,
@@ -69,9 +92,9 @@ export async function getTenderSnapshot(requestId: string, buyerCompanyId: strin
     const data = log.payload as Record<string, unknown>;
     events.push({ id: log.id, sequence: 0, requestId, tenderRoundId: round?.id ?? null, phase: "error", timestamp: log.occurredAt.toISOString(), message: String(data.message), ...(typeof data.supplierId === "string" ? { supplierId: data.supplierId } : {}) });
   }
-  if (finished) events.push({ id: finished.id, sequence: 0, requestId, tenderRoundId: round?.id ?? null, phase: "complete", timestamp: finished.occurredAt.toISOString(), status: String((finished.payload as Record<string, unknown>).status), summary });
+  if (finished) events.push({ id: finished.id, sequence: 0, requestId, tenderRoundId: round?.id ?? null, phase: "complete", timestamp: finished.occurredAt.toISOString(), status: String((finished.payload as Record<string, unknown>).status), summary: presentationSummary });
   const phaseOrder = ["creation", "rfq", "initial_offer", "counteroffer", "final_offer", "award", "orders", "payment", "error", "complete"];
   events.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase));
   events.forEach((event, index) => { event.sequence = index + 1; });
-  return { requestId, tenderRoundId: round?.id ?? null, status: request.status, running: !!latestStart && !finished, events, summary };
+  return { requestId, tenderRoundId: round?.id ?? null, status: request.status, running: !!latestStart && !finished, events, summary: presentationSummary };
 }

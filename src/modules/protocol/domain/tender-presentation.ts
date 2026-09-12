@@ -1,4 +1,4 @@
-export const ENTRY_DURATION_MS = 1200;
+export const ENTRY_DURATION_MS = 650;
 export const PRESENTATION_DEADLINE_MS = 55_000;
 export const CATCH_UP_AFTER_MS = 50_000;
 

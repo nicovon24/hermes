@@ -20,16 +20,28 @@ describe("negotiation stage semantics", () => {
     expect(html).toContain("Ver mis pedidos");
     expect(html).toContain("Ver conversaciones");
   });
-  it("does not declare success if no orders could be created", () => {
+  it("hides empty totals and recovery actions if no result exists", () => {
     const html = renderToStaticMarkup(createElement(NegotiationStage, { ...props, events: result({ ...summary, total: "0", orderCount: 0, coveredProducts: 0, pendingProducts: 1, saving: null }) }));
-    expect(html).toContain("Todavía hay productos por resolver.");
-    expect(html).not.toContain("Tu próximo pedido, resuelto.");
-    expect(html).toContain("Revisar condiciones");
+    expect(html).not.toContain("Total adjudicado");
+    expect(html).not.toContain("No comparable");
+    expect(html).not.toContain("Revisar condiciones");
+    expect(html).not.toContain("Reintentar pendientes");
   });
   it("retains three color identities and a keyboard-accessible provider region", () => {
     const html = renderToStaticMarkup(createElement(NegotiationStage, props));
     for (const color of ["cyan", "amber", "violet"]) expect(html).toContain(`supplier-${color}`);
     expect(html).toContain('aria-label="Condiciones por proveedor" tabindex="0"');
+  });
+  it("introduces the three animated dashed connection lines sequentially while the first durable event is pending", () => {
+    const html = renderToStaticMarkup(createElement(NegotiationStage, { ...props, pending: true, streaming: true, animateEntrance: true }));
+    expect(html).toContain("Conectando con 3 distribuidores");
+    expect(html.match(/is-connecting/g)).toHaveLength(3);
+    expect(html.match(/route-connecting/g)).toHaveLength(3);
+    for (const delay of [650, 1100, 1550]) expect(html).toContain(`animation-delay:${delay}ms`);
+    const css = readFileSync(new URL("../src/app/hermes.css", import.meta.url), "utf8");
+    expect(css).toContain("stroke-dasharray: 16 10");
+    expect(css).toContain("animation: route-loading-flow .9s linear infinite both");
+    expect(css).not.toContain("connection-pulse");
   });
   it("disables animation and packets in the reduced-motion media query", () => {
     const css = readFileSync(new URL("../src/app/hermes.css", import.meta.url), "utf8");
@@ -37,5 +49,38 @@ describe("negotiation stage semantics", () => {
     expect(media).toContain("animation: none !important");
     expect(media).toContain("transition: none !important");
     expect(media).toContain(".message-packet { display: none; }");
+    expect(media).toContain(".payment-confirmed-route { stroke-dashoffset: 0; }");
+  });
+  it("shows payment processing and draws a green confirmed route to the paid supplier", () => {
+    const processing = renderToStaticMarkup(createElement(NegotiationStage, {
+      ...props,
+      approving: true,
+      approvalMode: "payment",
+      buyerCompanyId: "buyer",
+      onApprove: vi.fn(),
+      events: result(summary),
+    }));
+    expect(processing).toContain("Procesando el pago…");
+
+    const confirmedSummary: TenderSummary = {
+      ...summary,
+      orders: [{ id: "order", reference: "PO-1", supplierId: "00000000-0000-4000-8000-000000000101", total: "100.00", paymentStatus: "PAYMENT_CONFIRMED" }],
+    };
+    const payment: TenderProgressEvent = {
+      id: "payment",
+      requestId: "request",
+      tenderRoundId: "round",
+      sequence: 2,
+      supplierId: "00000000-0000-4000-8000-000000000101",
+      phase: "payment",
+      timestamp: "2026-09-12T10:00:00.500Z",
+      status: "CONFIRMED",
+    };
+    const confirmedEvents = [result(confirmedSummary)[0], payment, result(confirmedSummary)[1]];
+    const confirmed = renderToStaticMarkup(createElement(NegotiationStage, { ...props, events: confirmedEvents }));
+    expect(confirmed).toContain("Pago aprobado");
+    expect(confirmed).toContain("La transferencia a Distribuidora Norte quedó confirmada");
+    expect(confirmed).toContain('class="payment-confirmed-route"');
+    expect(confirmed).toContain('class="payment-confirmed-check"');
   });
 });
