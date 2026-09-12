@@ -1,0 +1,2 @@
+ALTER TABLE "quotes"
+ADD COLUMN IF NOT EXISTS "exchange_rate" TEXT NOT NULL DEFAULT '0';

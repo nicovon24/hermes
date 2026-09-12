@@ -87,7 +87,14 @@ export async function launchPurchaseFlow(unsafeInput: LaunchPurchaseFlowInput, o
     await publish();
     const createdOrders = await prisma.purchaseOrder.count({ where: { purchaseRequestId: input.requestId } });
     if (createdOrders > 0) {
-      await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish);
+      await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish, input.kind === "new" || input.kind === "approve" ? (input.conditions.route ?? "ARBITRUM_DIRECT") : "ARBITRUM_DIRECT");
+      if ((input.kind === "new" || input.kind === "approve") && input.conditions.quoteId && input.conditions.route === "SOLANA_TO_ARBITRUM") {
+        const quote = await prisma.quote.findUnique({ where: { id: input.conditions.quoteId } });
+        if (!quote || quote.expiresAt <= new Date() || quote.destinationToken !== "ARGt") throw new DomainError("La cotización no existe, venció o no corresponde a ARGt", "VALIDATION_ERROR", 400);
+        const [whole, fraction = ""] = quote.destinationAmount.split(".");
+        const amountBaseUnits = (BigInt(whole) * 10n ** 18n + BigInt(fraction.padEnd(18, "0").slice(0, 18))).toString();
+        await prisma.payment.updateMany({ where: { purchaseOrder: { purchaseRequestId: input.requestId } }, data: { quoteId: quote.id, route: "SOLANA_TO_ARBITRUM", amountBaseUnits } });
+      }
       await publish();
     }
     const settled = await prisma.purchaseRequest.findUniqueOrThrow({ where: { id: input.requestId } });

@@ -8,6 +8,7 @@ const conditions = z.object({
   paymentTerms: z.string().min(1).max(200),
   settlementAsset: z.string().min(1).max(80),
   route: z.enum(["ARBITRUM_DIRECT", "SOLANA_TO_ARBITRUM"]).optional(),
+  quoteId: z.string().min(1).optional(),
   autoPay: z.boolean(),
   mandateExpiresAt: z.iso.datetime({ offset: true }).refine((v) => new Date(v).getTime() > Date.now(), "El mandato debe vencer en el futuro."),
 });

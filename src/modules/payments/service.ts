@@ -307,7 +307,7 @@ async function createPaymentIntents(
               route,
               externalReference: `payment:${order.externalReference}`,
           },
-          update: {},
+          update: { route },
         });
         const requestedEvent = await tx.paymentEvent.findFirst({
           where: { paymentId: payment.id, type: "PAYMENT_REQUESTED" },
