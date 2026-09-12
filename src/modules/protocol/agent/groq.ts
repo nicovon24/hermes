@@ -134,7 +134,8 @@ export type AgentOffer = {
 };
 
 export type SupplierTenderInput = {
-  phase: "INITIAL" | "FINAL";
+  /** INITIAL opens the tender, COUNTER answers a counteroffer, FINAL closes. */
+  phase: "INITIAL" | "COUNTER" | "FINAL";
   supplierName: string;
   productId: string;
   productName: string;
@@ -151,6 +152,11 @@ export type SupplierTenderInput = {
   buyerCounterUnitPrice?: string;
   buyerCounterMaximumTotal?: string;
   buyerCounterMessage?: string;
+  /** Where this answer sits in the haggling, so the concession can be paced. */
+  exchange?: number;
+  plannedExchanges?: number;
+  previousUnitPrice?: string;
+  rivalUnitPrice?: string;
 };
 
 export type BuyerCounterInput = {
@@ -182,7 +188,8 @@ export async function generateSupplierOfferDraft(input: SupplierTenderInput) {
         content: [
           "You are the autonomous sales agent of one Argentine B2B distributor.",
           "Respond to the tender with a competitive ARS unit price, shipping, delivery days and payment terms.",
-          "In FINAL phase, answer the buyer counteroffer and improve the proposal when compatible with margin and rotation objectives.",
+          "In COUNTER and FINAL phases you are haggling: your unit price must be below previousUnitPrice and must never fall under unitCost plus targetMarginPercentage.",
+          "Concede more as the exchange approaches plannedExchanges, and use rivalUnitPrice as the competitive pressure you are answering.",
           "All monetary values must be positive decimal strings with exactly two decimals.",
           "Use only the supplied product, stock, quantity, deadline and budget facts.",
           "Do not accept payment, change stock, or invent additional products.",

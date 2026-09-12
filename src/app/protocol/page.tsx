@@ -1,7 +1,4 @@
-import Link from "next/link";
-
 import { ApproveRequestForm } from "@/components/approve-request-form";
-import { BuyerOrderWorkspace } from "@/components/buyer-order-workspace";
 import { ConversationModal } from "@/components/conversation-modal";
 import {
   ContextModal,
@@ -10,19 +7,33 @@ import {
 } from "@/components/context-modal";
 import { RecommendationButton } from "@/components/recommendation-button";
 import { TenderAgentsButton } from "@/components/tender-agents-button";
+import { OrderSlip } from "@/components/order-slip";
 import { PaymentReviewForm } from "@/components/payment-review-form";
+import {
+  bestTotal,
+  formatDayMonth,
+  formatQuantity,
+  formatShortDate,
+  ledgerGroups,
+  pluralize,
+  requestStatus,
+  supplierColor,
+  supplierOrder,
+  type SupplierOffer,
+} from "@/components/request-ledger";
 import {
   DEMO_SUPPLIER_COMPANY_IDS,
   getBuyerCompanyId,
 } from "@/lib/demo-workspace";
 import { centsToMoney, formatArs, moneyToCents } from "@/lib/decimal";
 import { prisma } from "@/lib/prisma";
-import { argtBaseUnitsToDisplay } from "@/modules/payments/domain";
+import type { OrderSlipData } from "@/modules/protocol/domain/order-slip";
+import { suppliers as demoSuppliers } from "@/modules/protocol/domain/purchase-flow";
+import { serializePurchaseOrder } from "@/modules/protocol/services/supplier-orders";
 import {
   getBuyerProductContexts,
   getSupplierProductContexts,
 } from "@/modules/context/analytics";
-import { buildConsolidatedPurchaseDraft } from "@/modules/context/replenishment";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -73,28 +84,7 @@ type RequestRow = {
     status?: "PENDING" | "AWARDED";
     pending_reason?: string | null;
   }>;
-  purchase_orders: Array<{
-    id: string;
-    supplier_company_id: string;
-    external_reference: string;
-    total: string | number;
-    delivery_date: string;
-    status: string;
-    payment: {
-      id: string;
-      status: string;
-      amount_base_units: string;
-      tx_hash: string | null;
-      last_error: string | null;
-    } | null;
-    purchase_order_items: Array<{
-      id: string;
-      description: string;
-      quantity: string | number;
-      unit: string;
-      total: string | number;
-    }>;
-  }>;
+  purchase_orders: OrderSlipData[];
   negotiations: Array<{
     id: string;
     supplier_company_id: string;
@@ -176,6 +166,25 @@ const messageLabels: Record<string, string> = {
   counteroffer: "Contraoferta del comprador",
   final_offer: "Oferta final del vendedor",
 };
+
+/**
+ * Each distributor haggles as many passes as it is willing to: from the second
+ * one on, the thread names the round so a long negotiation stays readable.
+ */
+function threadLabels(messages: Array<{ id: string; message_type: string }>) {
+  const labels = new Map<string, string>();
+  let exchange = 0;
+  let answered = false;
+  for (const message of messages) {
+    if (message.message_type === "counteroffer") exchange += 1;
+    const improved = message.message_type === "offer" && answered;
+    if (message.message_type === "offer") answered = true;
+    const base = improved ? "Mejora del vendedor" : messageLabels[message.message_type] ?? message.message_type;
+    const rounded = exchange > 1 && (improved || message.message_type === "counteroffer");
+    labels.set(message.id, rounded ? `${base} · ronda ${exchange}` : base);
+  }
+  return labels;
+}
 
 const numberFormatter = new Intl.NumberFormat("es-AR", {
   maximumFractionDigits: 2,
@@ -410,11 +419,7 @@ export default async function ProtocolPage() {
     created_at: request.createdAt.toISOString(),
     mandates: request.mandates.map((mandate) => ({ id: mandate.id, maximum_total_including_fees: mandate.maximumTotalIncludingFees.toString(), payment_terms: mandate.paymentTerms, settlement_asset: mandate.settlementAsset, auto_accept: mandate.autoAccept, auto_pay: mandate.autoPay, status: mandate.status, expires_at: mandate.expiresAt.toISOString() })),
     purchase_request_items: request.items.map((item) => ({ id: item.id, product_id: item.productId, description: item.description, minimum_quantity: item.minimumQuantity.toString(), target_quantity: item.targetQuantity.toString(), maximum_quantity: item.maximumQuantity.toString(), unit: item.unit, status: item.status as "PENDING" | "AWARDED", pending_reason: item.pendingReason })),
-    purchase_orders: request.purchaseOrders.map((order) => ({
-      id: order.id, supplier_company_id: order.supplierCompanyId, external_reference: order.externalReference, total: order.total.toString(), delivery_date: order.deliveryDate.toISOString().slice(0, 10), status: order.status,
-      payment: order.payment ? { id: order.payment.id, status: order.payment.status, amount_base_units: order.payment.amountBaseUnits, tx_hash: order.payment.txHash, last_error: order.payment.lastError } : null,
-      purchase_order_items: order.items.map((item) => ({ id: item.id, description: item.description, quantity: item.quantity.toString(), unit: item.unit, total: item.total.toString() })),
-    })),
+    purchase_orders: request.purchaseOrders.map(serializePurchaseOrder),
     negotiations: request.negotiations.map((negotiation) => ({
       id: negotiation.id, supplier_company_id: negotiation.supplierCompanyId, status: negotiation.status,
       offers: negotiation.offers.map((offer) => ({ id: offer.id, total: offer.total.toString(), valid_until: offer.validUntil.toISOString(), confirmed_stock: offer.confirmedStock, status: offer.status, payload: offer.payload as Record<string, unknown> })),
@@ -423,26 +428,6 @@ export default async function ProtocolPage() {
     })),
     agent_runs: request.agentRuns.map((run) => ({ id: run.id, company_id: run.companyId, kind: run.kind, model: run.model, status: run.status, input_snapshot: run.inputSnapshot as Record<string, unknown>, output: run.output as Record<string, unknown>, created_at: run.createdAt.toISOString() })),
   }));
-  const openStatuses = new Set([
-    "DRAFT",
-    "AWAITING_APPROVAL",
-    "APPROVED",
-    "NEGOTIATING",
-    "POLICY_VALIDATED",
-    "FUNDS_RESERVED",
-    "OFFER_ACCEPTED",
-    "ORDER_CREATED",
-    "PAYMENT_PENDING",
-    "PAYMENT_CONFIRMED",
-    "PAYMENT_REVIEW_REQUIRED",
-  ]);
-  const productsWithOpenOrders = new Set(
-    requests
-      .filter((request) => openStatuses.has(request.status))
-      .flatMap((request) =>
-        request.purchase_request_items.map((item) => item.product_id),
-      ),
-  );
   const requestProductIds = Array.from(
     new Set(
       requests.flatMap((request) =>
@@ -470,520 +455,382 @@ export default async function ProtocolPage() {
       context,
     ]),
   );
-  const consolidatedDraft = buildConsolidatedPurchaseDraft(
-    allBuyerContexts,
-    productsWithOpenOrders,
-  );
-  const automaticDraftCount = consolidatedDraft.products.filter(
-    (product) => product.automaticallySelected,
-  ).length;
 
-  return (
-    <main className="shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Cliente activo · demo sin login</p>
-          <h1>{company.legal_name}</h1>
-        </div>
-        <nav className="nav-links"><Link href="/">Inicio</Link><Link href="/context">Contexto</Link></nav>
-      </header>
+  const pendingReasonLabels: Record<string, string> = { PRESUPUESTO_INSUFICIENTE: "presupuesto insuficiente", SIN_OFERTA_CONFIRMADA: "sin oferta confirmada", SIN_COBERTURA_CONFIRMADA: "sin cobertura confirmada" };
+  const supplierName = (supplierId: string) =>
+    suppliers.find((candidate) => candidate.id === supplierId)?.legal_name
+    ?? demoSuppliers.find((candidate) => candidate.id === supplierId)?.name
+    ?? "Distribuidor";
 
-      <section className="hero-grid">
-        <div>
-          <p className="eyebrow">Control operativo</p>
-          <h2>Compras con mandato, trazabilidad e idempotencia.</h2>
-          <p className="muted">
-            El agente comprador detecta la necesidad y deja un pedido listo. El
-            comercio sólo lo envía o lo edita; Prisma conserva cada transición.
-          </p>
-        </div>
-        <div className="metric-card">
-          <span>Pedidos pendientes</span>
-          <strong>{automaticDraftCount}</strong>
-          <small>{requests.filter((request) => request.status === "NEGOTIATING").length} negociando</small>
-        </div>
-      </section>
+  const groups = ledgerGroups
+    .map((group) => ({ ...group, requests: requests.filter((request) => requestStatus(request.status).tone === group.tone) }))
+    .filter((group) => group.requests.length > 0);
+  const firstOpenId = groups[0]?.requests[0]?.id;
 
-      <section className="section-block">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Contrapartes mock</p>
-            <h2>3 distribuidores con stock</h2>
+  function renderRequest(request: RequestRow, open: boolean) {
+    const status = requestStatus(request.status);
+    const items = request.purchase_request_items;
+    const requestItem = items[0];
+    const activeMandate =
+      request.mandates.find((mandate) => mandate.status === "ACTIVE") ??
+      request.mandates[0];
+    const buyerContextEntries = items.flatMap((item) => {
+      const context = buyerContextByProduct.get(item.product_id);
+      return context ? [{ context, item }] : [];
+    });
+    const negotiations = [...request.negotiations].sort(
+      (left, right) => supplierOrder(left.supplier_company_id) - supplierOrder(right.supplier_company_id),
+    );
+    const activeOffers = negotiations.flatMap((negotiation) =>
+      negotiation.offers.filter((offer) => offer.status === "ACTIVE"),
+    );
+    const finalOfferCount = negotiations.filter((negotiation) =>
+      negotiation.negotiation_messages.some((message) => message.message_type === "final_offer"),
+    ).length;
+    const missingFinalOffers = Math.max(0, negotiations.length - finalOfferCount);
+    const hasAllFinalOffers = negotiations.length === 3 && missingFinalOffers === 0;
+    const recommendationRun = request.agent_runs
+      .filter((run) => run.kind === "OFFER_RECOMMENDATION" && hasAllFinalOffers)
+      .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())[0];
+    const buyerSnapshots: ContextSnapshot[] = buyerContextEntries.length > 0
+      ? [
+          { label: "Contexto calculado por producto", data: buyerContextEntries.map(({ context, item }) => ({ requestItem: item, context })) },
+          { label: "Pedido que originó la negociación", data: { purchaseRequestId: request.id, status: request.status, requiredBy: request.required_by, expiresAt: request.expires_at, items } },
+          ...(activeMandate ? [{ label: "Mandato autorizado", data: activeMandate }] : []),
+          ...request.agent_runs
+            .filter((run) => run.company_id === company.id)
+            .map((run) => ({ label: `${run.kind} · ${run.model}`, data: { status: run.status, createdAt: run.created_at, input: run.input_snapshot, output: run.output } })),
+        ]
+      : [];
+    // Latest total per demo distributor, in the stage's fixed order: the final
+    // offer when it arrived, otherwise whatever is on the table.
+    const supplierOffers: SupplierOffer[] = demoSuppliers.map((supplier) => {
+      const negotiation = negotiations.find((candidate) => candidate.supplier_company_id === supplier.id);
+      const finalMessage = negotiation?.negotiation_messages.find((message) => message.message_type === "final_offer");
+      const finalTotal = finalMessage ? displayValue(finalMessage.payload.total) : null;
+      const activeOffer = negotiation?.offers.find((offer) => offer.status === "ACTIVE");
+      return { supplierId: supplier.id, total: finalTotal ?? (activeOffer ? String(activeOffer.total) : null) };
+    });
+    const bestFinalSupplierId = hasAllFinalOffers
+      ? [...supplierOffers].filter((offer) => offer.total && moneyToCents(offer.total) > 0n).sort((left, right) => {
+          const difference = moneyToCents(left.total!) - moneyToCents(right.total!);
+          return difference < 0n ? -1 : difference > 0n ? 1 : 0;
+        })[0]?.supplierId
+      : undefined;
+    const recommendedNames = Array.isArray(recommendationRun?.output.allocations)
+      ? new Set((recommendationRun.output.allocations as Array<Record<string, unknown>>).map((entry) => String(entry.supplierName ?? "")))
+      : null;
+    // Awarded rows: a real order names the distributor; before that, the
+    // recommendation does; before that, the best final price stands in.
+    const awardedSupplierIds = new Set<string>(
+      request.purchase_orders.length
+        ? request.purchase_orders.map((order) => order.supplierCompanyId)
+        : recommendedNames
+          ? suppliers.filter((supplier) => recommendedNames.has(supplier.legal_name)).map((supplier) => supplier.id)
+          : bestFinalSupplierId ? [bestFinalSupplierId] : [],
+    );
+    const awardedLabel = request.purchase_orders.length ? "Pedido emitido" : recommendedNames ? "Recomendado" : "Mejor precio";
+    const awardedTotal = request.purchase_orders.length
+      ? centsToMoney(request.purchase_orders.reduce((total, order) => total + moneyToCents(order.total), 0n))
+      : null;
+    const headlineTotal = awardedTotal ?? bestTotal(supplierOffers);
+    const headlineLabel = awardedTotal ? "Adjudicado" : headlineTotal ? (hasAllFinalOffers ? "Mejor oferta final" : "Mejor oferta hasta ahora") : "Sin ofertas todavía";
+    const totalUnits = items.reduce((total, item) => total + Number(item.target_quantity), 0);
+    const quantitySummary = items.length === 1
+      ? formatQuantity(requestItem.target_quantity, requestItem.unit)
+      : `${pluralize(items.length, "producto")} · ${formatNumber(totalUnits)} unidades`;
+    const title = requestItem?.description ?? "Solicitud";
+    const showTenderActions =
+      (["NEGOTIATING", "RECOMMENDED"].includes(request.status) && missingFinalOffers > 0) ||
+      (request.status === "NEGOTIATING" && hasAllFinalOffers);
+
+    return (
+      <details className={`ledger-entry tone-${status.tone}`} key={request.id} open={open || undefined}>
+        <summary className="ledger-row">
+          <span className="ledger-title">
+            <strong>{title}{items.length > 1 ? <em> + {items.length - 1} más</em> : null}</strong>
+            <span>{quantitySummary} · entrega {formatDayMonth(request.required_by)}</span>
+          </span>
+          <span className="ledger-status"><span className="ledger-dot" aria-hidden="true" />{status.label}</span>
+          <span className="ledger-total">
+            <strong>{headlineTotal ? formatMoney(headlineTotal) : "—"}</strong>
+            <span>{headlineLabel}</span>
+          </span>
+          <time className="ledger-date" dateTime={request.created_at}>{formatShortDate(request.created_at)}</time>
+          <span className="ledger-chevron" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg>
+          </span>
+        </summary>
+
+        <div className="ledger-body">
+          <div className="entry-meta">
+            <span>Creada el {formatDateTime(request.created_at)}</span>
+            {buyerContextEntries.length > 0 ? (
+              <ContextModal
+                eyebrow="Contexto privado del comprador"
+                sections={buyerContextSections(buyerContextEntries, activeMandate)}
+                snapshots={buyerSnapshots}
+                subtitle="Lo que Hermes sabe de tu comercio para negociar. Los distribuidores no lo ven."
+                title={company.legal_name}
+                triggerLabel="Datos de tu comercio"
+              />
+            ) : null}
           </div>
-        </div>
-        <div className="supplier-grid">
-          {suppliers.map((supplier) => (
-            <Link className="supplier-card" href={`/${supplier.slug}`} key={supplier.id}>
-              <h3>{supplier.legal_name}</h3>
-              <div className="catalog-list">
-                {latestInventory
-                  .filter((row) => row.company_id === supplier.id)
-                  .map((row) => {
-                    const available = Number(row.on_hand) - Number(row.reserved);
-                    return (
-                      <p key={`${supplier.id}-${row.products?.external_id}`}>
-                        <strong>{row.products?.name}</strong>
-                        <span>{available} {row.products?.unit} disponibles</span>
-                      </p>
-                    );
-                  })}
-              </div>
-            </Link>
-          ))}
-        </div>
-      </section>
 
-      <BuyerOrderWorkspace companyId={company.id} draft={consolidatedDraft} />
+          <section className="entry-section">
+            <h4 className="entry-label">Lo que pediste</h4>
+            <ul className="entry-items">
+              {items.map((item) => (
+                <li key={item.id}>
+                  <span className="entry-item-name"><strong>{item.description}</strong></span>
+                  <span className="entry-item-qty">{formatQuantity(item.target_quantity, item.unit)}</span>
+                  {item.status === "AWARDED" ? <span className="line-state awarded">Adjudicado</span>
+                    : item.status === "PENDING" ? <span className="line-state pending">Pendiente{item.pending_reason ? ` · ${pendingReasonLabels[item.pending_reason] ?? item.pending_reason.replaceAll("_", " ").toLowerCase()}` : ""}</span>
+                    : null}
+                </li>
+              ))}
+            </ul>
+          </section>
 
-      <section className="section-block">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Actividad</p>
-            <h2>Solicitudes</h2>
-          </div>
-        </div>
-        <div className="request-list">
-          {requests.length === 0 ? <p className="muted">Todavía no hay solicitudes.</p> : null}
-          {requests.map((request) => {
-            const requestItem = request.purchase_request_items[0];
-            const activeMandate =
-              request.mandates.find((mandate) => mandate.status === "ACTIVE") ??
-              request.mandates[0];
-            const buyerContextEntries = request.purchase_request_items.flatMap((item) => {
-              const context = buyerContextByProduct.get(item.product_id);
-              return context ? [{ context, item }] : [];
-            });
-            const activeOffers = request.negotiations.flatMap((negotiation) =>
-              negotiation.offers.filter((offer) => offer.status === "ACTIVE"),
-            );
-            const finalOfferCount = request.negotiations.filter((negotiation) =>
-              negotiation.negotiation_messages.some(
-                (message) => message.message_type === "final_offer",
-              ),
-            ).length;
-            const missingFinalOffers = Math.max(
-              0,
-              request.negotiations.length - finalOfferCount,
-            );
-            const hasAllFinalOffers =
-              request.negotiations.length === 3 && missingFinalOffers === 0;
-            const recommendationRun = request.agent_runs
-              .filter(
-                (run) =>
-                  run.kind === "OFFER_RECOMMENDATION" && hasAllFinalOffers,
-              )
-              .sort(
-                (left, right) =>
-                  new Date(right.created_at).getTime() -
-                  new Date(left.created_at).getTime(),
-              )[0];
-            const buyerSnapshots: ContextSnapshot[] = buyerContextEntries.length > 0
-              ? [
-                  {
-                    label: "Contexto calculado por producto",
-                    data: buyerContextEntries.map(({ context, item }) => ({
-                      requestItem: item,
-                      context,
-                    })),
-                  },
-                  {
-                    label: "Pedido que originó la negociación",
-                    data: {
-                      purchaseRequestId: request.id,
-                      status: request.status,
-                      requiredBy: request.required_by,
-                      expiresAt: request.expires_at,
-                      items: request.purchase_request_items,
-                    },
-                  },
-                  ...(activeMandate
-                    ? [{ label: "Mandato autorizado", data: activeMandate }]
-                    : []),
-                  ...request.agent_runs
-                    .filter((run) => run.company_id === company.id)
-                    .map((run) => ({
-                      label: `${run.kind} · ${run.model}`,
-                      data: {
-                        status: run.status,
-                        createdAt: run.created_at,
-                        input: run.input_snapshot,
-                        output: run.output,
-                      },
-                    })),
-                ]
-              : [];
-            const metrics = request.negotiations
-              .map(getNegotiationMetric)
-              .filter((metric): metric is NegotiationMetric => Boolean(metric));
-            const totals = activeOffers.map((offer) => moneyToCents(String(offer.total)));
-            const minimumTotal = totals.reduce(
-              (minimum, total) => total < minimum ? total : minimum,
-              totals[0] ?? 0n,
-            );
-            const maximumTotal = totals.reduce(
-              (maximum, total) => total > maximum ? total : maximum,
-              totals[0] ?? 0n,
-            );
-            const totalMessages = metrics.reduce(
-              (total, metric) => total + metric.message_count,
-              0,
-            );
-            const averageReduction = metrics.length
-              ? metrics.reduce(
-                  (total, metric) =>
-                    total + Number(metric.price_reduction_percentage),
-                  0,
-                ) / metrics.length
-              : 0;
-            return (
-              <article className="request-card" key={request.id}>
-                <div className="request-header">
-                  <div>
-                    <span className="status">{request.status}</span>
-                    <h3>{request.purchase_request_items[0]?.description ?? "Solicitud"}</h3>
-                    <code>{request.id}</code>
-                  </div>
-                  <div className="request-summary">
-                    <span>{request.negotiations.length} negociaciones</span>
-                    <span>{finalOfferCount} / 3 ofertas finales</span>
-                    {buyerContextEntries.length > 0 ? (
-                      <ContextModal
-                        eyebrow="Contexto privado del comprador"
-                        sections={buyerContextSections(buyerContextEntries, activeMandate)}
-                        snapshots={buyerSnapshots}
-                        subtitle="Datos del comercio usados para calcular cobertura, formular contraofertas y evaluar las propuestas. Los distribuidores no ven este contexto."
-                        title={`${company.legal_name} · ${request.purchase_request_items.length} productos`}
-                        triggerLabel="Contexto del comercio"
-                      />
-                    ) : null}
-                  </div>
-                </div>
-                {request.purchase_request_items.map((item) => (
-                  <p className="muted" key={item.id}>
-                    {item.product_id} · {String(item.target_quantity)} {item.unit} · entrega {request.required_by}
-                    {item.status ? ` · ${item.status}${item.pending_reason ? ` (${item.pending_reason})` : ""}` : ""}
-                  </p>
+          {request.purchase_orders.length > 0 ? (
+            <section className="entry-section">
+              <h4 className="entry-label">{pluralize(request.purchase_orders.length, "pedido emitido", "pedidos emitidos")}</h4>
+              <div className="slip-grid">
+                {request.purchase_orders.map((order) => (
+                  <OrderSlip colorClass={`supplier-${supplierColor(order.supplierCompanyId)}`} counterpartName={supplierName(order.supplierCompanyId)} key={order.id} order={order} />
                 ))}
-                {request.purchase_orders.length > 0 ? (
-                  <div className="order-grid">
-                    {request.purchase_orders.map((order) => {
-                      const supplier = suppliers.find((candidate) => candidate.id === order.supplier_company_id);
-                      return (
-                        <article className="purchase-order-card" key={order.id}>
-                          <div className="request-header">
-                            <div><span className="product-code">{order.external_reference}</span><h3>{supplier?.legal_name ?? "Distribuidor"}</h3></div>
-                            <span className="status success">{order.status}</span>
-                          </div>
-                          <div className="order-lines">
-                            {order.purchase_order_items.map((item) => <div key={item.id}><span>{item.description}</span><strong>{String(item.quantity)} {item.unit}</strong><small>{formatMoney(item.total)}</small></div>)}
-                          </div>
-                          <footer><span>Entrega {order.delivery_date}</span><strong>{formatMoney(order.total)}</strong></footer>
-                          {order.payment ? (
-                            <div className="payment-summary">
-                              <strong>{order.payment.status}</strong>
-                              <span>{argtBaseUnitsToDisplay(order.payment.amount_base_units)} ARGt</span>
-                              {order.payment.tx_hash ? (
-                                <a href={`https://arbiscan.io/tx/${order.payment.tx_hash}`} rel="noreferrer" target="_blank">Ver en Arbiscan</a>
-                              ) : null}
-                              {order.payment.last_error ? <small className="feedback error">{order.payment.last_error}</small> : null}
-                            </div>
-                          ) : activeMandate?.auto_pay ? <p className="muted">Pago ARGt pendiente de creación</p> : null}
-                        </article>
-                      );
-                    })}
-                  </div>
-                ) : null}
-                {request.status === "PAYMENT_REVIEW_REQUIRED" ? (
-                  <PaymentReviewForm
-                    companyId={company.id}
-                    failedPayments={request.purchase_orders.flatMap((order) =>
-                      order.payment?.status === "PAYMENT_FAILED"
-                        ? [{ id: order.payment.id, label: order.external_reference }]
-                        : [],
-                    )}
-                    purchaseRequestId={request.id}
-                  />
-                ) : null}
-                {request.negotiations.length > 0 ? (
-                  <div className="negotiation-grid">
-                    {request.negotiations.map((negotiation) => {
-                      const supplier = suppliers.find(
-                        (candidate) => candidate.id === negotiation.supplier_company_id,
-                      );
+              </div>
+            </section>
+          ) : null}
+
+          {request.status === "PAYMENT_REVIEW_REQUIRED" ? (
+            <section className="entry-section entry-action">
+              <h4 className="entry-label">Revisión de pago</h4>
+              <PaymentReviewForm
+                companyId={company.id}
+                failedPayments={request.purchase_orders.flatMap((order) =>
+                  order.payment?.status === "PAYMENT_FAILED" ? [{ id: order.payment.id, label: order.externalReference }] : [],
+                )}
+                purchaseRequestId={request.id}
+                compact
+              />
+            </section>
+          ) : null}
+
+          {negotiations.length > 0 ? (
+            <section className="entry-section">
+              <h4 className="entry-label">Ofertas de los distribuidores</h4>
+              <div className="offer-table-wrap">
+                <table className="offer-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Distribuidor</th>
+                      <th scope="col">Oferta inicial</th>
+                      <th scope="col">Oferta final</th>
+                      <th scope="col">Baja</th>
+                      <th scope="col">Entrega</th>
+                      {items.length > 1 ? <th scope="col">Productos</th> : null}
+                      <th scope="col"><span className="sr-only">Detalle</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {negotiations.map((negotiation) => {
+                      const supplier = suppliers.find((candidate) => candidate.id === negotiation.supplier_company_id);
+                      const name = supplierName(negotiation.supplier_company_id);
                       const metric = getNegotiationMetric(negotiation);
                       const messages = [...negotiation.negotiation_messages].sort(
-                        (left, right) =>
-                          new Date(left.sent_at).getTime() -
-                          new Date(right.sent_at).getTime(),
+                        (left, right) => new Date(left.sent_at).getTime() - new Date(right.sent_at).getTime(),
                       );
-                      const activeOffer = negotiation.offers.find(
-                        (offer) => offer.status === "ACTIVE",
-                      );
-                      const finalOfferMessage = messages.find(
-                        (message) => message.message_type === "final_offer",
-                      );
-                      const finalOfferTotal = finalOfferMessage
-                        ? displayValue(finalOfferMessage.payload.total)
-                        : null;
+                      const threadMessageLabels = threadLabels(messages);
+                      const activeOffer = negotiation.offers.find((offer) => offer.status === "ACTIVE");
+                      const offerMessage = messages.find((message) => message.message_type === "offer");
+                      const finalOfferMessage = messages.find((message) => message.message_type === "final_offer");
+                      const finalOfferTotal = finalOfferMessage ? displayValue(finalOfferMessage.payload.total) : null;
+                      const initialTotal = (offerMessage ? displayValue(offerMessage.payload.total) : null) ?? (metric ? String(metric.initial_total) : null) ?? (activeOffer ? String(activeOffer.total) : null);
+                      const latestPayload = finalOfferMessage?.payload ?? offerMessage?.payload ?? activeOffer?.payload ?? null;
+                      const noCoverage = finalOfferTotal !== null && moneyToCents(finalOfferTotal) <= 0n;
+                      const reduction = metric
+                        ? Number(metric.price_reduction_percentage)
+                        : initialTotal && finalOfferTotal && moneyToCents(initialTotal) > 0n && !noCoverage
+                          ? Number(moneyToCents(initialTotal) - moneyToCents(finalOfferTotal)) / Number(moneyToCents(initialTotal)) * 100
+                          : null;
+                      const deliveryDate = latestPayload ? displayValue(latestPayload.deliveryDate) : null;
+                      const coveredLines = latestPayload && Array.isArray(latestPayload.lines) ? latestPayload.lines.length : null;
+                      const awarded = awardedSupplierIds.has(negotiation.supplier_company_id);
                       const supplierContexts = supplier
-                        ? request.purchase_request_items.flatMap((item) => {
-                            const context = supplierContextByCompanyAndProduct.get(
-                              `${supplier.id}:${item.product_id}`,
-                            );
+                        ? items.flatMap((item) => {
+                            const context = supplierContextByCompanyAndProduct.get(`${supplier.id}:${item.product_id}`);
                             return context ? [context] : [];
                           })
                         : [];
                       const supplierContext = supplierContexts[0];
                       const supplierRuns = supplier
-                        ? request.agent_runs.filter(
-                            (run) =>
-                              run.company_id === supplier.id &&
-                              run.kind === "NEGOTIATION_DRAFT",
-                          )
+                        ? request.agent_runs.filter((run) => run.company_id === supplier.id && run.kind === "NEGOTIATION_DRAFT")
                         : [];
-                      const preparedSupplierInput =
-                        supplierContext && supplier && requestItem
-                          ? {
-                              phase: "INITIAL",
-                              supplierName: supplier.legal_name,
-                              productId: requestItem.product_id,
-                              productName: requestItem.description,
-                              unit: requestItem.unit,
-                              requestedQuantity: String(requestItem.target_quantity),
-                              availableQuantity: String(supplierContext.availableStock),
-                              maximumTenderTotal: activeMandate
-                                ? String(activeMandate.maximum_total_including_fees)
-                                : null,
-                              requiredBy: request.required_by,
-                              unitCost: supplierContext.unitCost,
-                              targetMarginPercentage:
-                                supplierContext.targetMarginPercentage.toFixed(3),
-                              targetRotationDays: supplierContext.targetRotationDays,
-                              unitsPreviouslySoldToClient: String(
-                                supplierContext.unitsSoldToClient,
-                              ),
-                              historicalAverageUnitPrice:
-                                supplierContext.averageHistoricalUnitPrice,
-                            }
-                          : null;
+                      const preparedSupplierInput = supplierContext && supplier && requestItem
+                        ? {
+                            phase: "INITIAL",
+                            supplierName: supplier.legal_name,
+                            productId: requestItem.product_id,
+                            productName: requestItem.description,
+                            unit: requestItem.unit,
+                            requestedQuantity: String(requestItem.target_quantity),
+                            availableQuantity: String(supplierContext.availableStock),
+                            maximumTenderTotal: activeMandate ? String(activeMandate.maximum_total_including_fees) : null,
+                            requiredBy: request.required_by,
+                            unitCost: supplierContext.unitCost,
+                            targetMarginPercentage: supplierContext.targetMarginPercentage.toFixed(3),
+                            targetRotationDays: supplierContext.targetRotationDays,
+                            unitsPreviouslySoldToClient: String(supplierContext.unitsSoldToClient),
+                            historicalAverageUnitPrice: supplierContext.averageHistoricalUnitPrice,
+                          }
+                        : null;
                       const supplierSnapshots: ContextSnapshot[] = supplierContexts.length > 0
                         ? [
-                            {
-                              label: "Contexto privado completo por producto",
-                              data: supplierContexts,
-                            },
+                            { label: "Contexto privado completo por producto", data: supplierContexts },
                             ...(supplierRuns.length > 0
-                              ? supplierRuns.map((run) => ({
-                                  label: `${String(run.input_snapshot.phase ?? "RONDA")} · ${run.model}`,
-                                  data: {
-                                    status: run.status,
-                                    createdAt: run.created_at,
-                                    input: run.input_snapshot,
-                                    output: run.output,
-                                  },
-                                }))
+                              ? supplierRuns.map((run) => ({ label: `${String(run.input_snapshot.phase ?? "RONDA")} · ${run.model}`, data: { status: run.status, createdAt: run.created_at, input: run.input_snapshot, output: run.output } }))
                               : preparedSupplierInput
-                                ? [
-                                    {
-                                      label: "Entrada inicial preparada · sin respuesta registrada",
-                                      data: preparedSupplierInput,
-                                    },
-                                  ]
+                                ? [{ label: "Entrada inicial preparada · sin respuesta registrada", data: preparedSupplierInput }]
                                 : []),
                           ]
                         : [];
                       return (
-                        <section className="negotiation-card" key={negotiation.id}>
-                          <div className="request-header">
-                            <div>
-                              <p className="eyebrow">Negociación paralela</p>
-                              <h3>{supplier?.legal_name ?? "Distribuidor"}</h3>
-                            </div>
-                            <div className="negotiation-actions">
-                              {finalOfferTotal ? (
-                                <>
-                                  <span className="final-offer-label">Oferta final</span>
-                                  <strong>{formatMoney(finalOfferTotal)}</strong>
-                                </>
-                              ) : activeOffer ? (
-                                <>
-                                  <span className="pending-offer-label">Oferta inicial</span>
-                                  <strong>{formatMoney(activeOffer.total)}</strong>
-                                </>
-                              ) : (
-                                <span className="status">Oferta final pendiente</span>
-                              )}
-                              {supplierContexts.length > 0 && supplier ? (
-                                <ContextModal
-                                  eyebrow="Contexto privado del distribuidor"
-                                  sections={supplierContextSections(supplierContexts)}
-                                  snapshots={supplierSnapshots}
-                                  subtitle="Stock, costos, objetivos e historial propios usados para preparar esta negociación. No incluye los datos privados de los otros distribuidores."
-                                  title={`${supplier.legal_name} · ${request.purchase_request_items.length} productos`}
-                                  triggerLabel="Ver contexto"
-                                />
-                              ) : null}
-                            </div>
-                          </div>
-                          <ConversationModal
-                            finalOfferTotal={
-                              finalOfferTotal ? formatMoney(finalOfferTotal) : undefined
-                            }
-                            messageCount={messages.length}
-                            productName={requestItem?.description ?? "Pedido"}
-                            supplierName={supplier?.legal_name ?? "Distribuidor"}
-                          >
-                            <div className="conversation-thread">
-                              {messages.length === 0 ? (
-                                <p className="muted">La discusión todavía no empezó.</p>
-                              ) : null}
-                              {messages.map((message) => {
-                                const buyerSentMessage =
-                                  message.sender_company_id === company.id;
-                                const facts = getMessageFacts(message.payload);
-                                return (
-                                  <article
-                                    className={
-                                      buyerSentMessage
-                                        ? "debate-message buyer-message"
-                                        : "debate-message supplier-message"
-                                    }
-                                    key={message.id}
-                                  >
-                                    <div className="message-heading">
-                                      <strong>
-                                        {messageLabels[message.message_type] ??
-                                          message.message_type}
-                                      </strong>
-                                      <time dateTime={message.sent_at}>
-                                        {formatDateTime(message.sent_at)}
-                                      </time>
-                                    </div>
-                                    <p className="message-sender">
-                                      {buyerSentMessage
-                                        ? `Agente comprador · ${company.legal_name}`
-                                        : `Agente vendedor · ${supplier?.legal_name ?? "Distribuidor"}`}
-                                    </p>
-                                    {facts.length > 0 ? (
-                                      <dl className="message-facts">
-                                        {facts.map((fact) => (
-                                          <div key={`${message.id}-${fact.label}`}>
-                                            <dt>{fact.label}</dt>
-                                            <dd>{fact.value}</dd>
-                                          </div>
-                                        ))}
-                                      </dl>
-                                    ) : null}
-                                    {typeof message.payload.notes === "string" ? (
-                                      <p className="message-notes">
-                                        {message.payload.notes}
-                                      </p>
-                                    ) : null}
-                                    <details className="message-raw">
-                                      <summary>Ver mensaje completo</summary>
-                                      <pre>
-                                        {JSON.stringify(message.raw_message, null, 2)}
-                                      </pre>
-                                    </details>
-                                  </article>
-                                );
-                              })}
-                            </div>
-                          </ConversationModal>
-                          {metric ? (
-                            <div className="analytics-grid compact-analytics">
-                              <div><span>Baja lograda</span><strong>{String(metric.price_reduction_percentage)}%</strong></div>
-                              <div><span>Margen estimado</span><strong>{String(metric.estimated_margin_percentage)}%</strong></div>
-                              <div><span>Eficiencia capital</span><strong>{String(metric.capital_efficiency_score)}%</strong></div>
-                              <div><span>Rondas / mensajes</span><strong>{metric.rounds} / {metric.message_count}</strong></div>
-                            </div>
-                          ) : null}
-                        </section>
+                        <tr className={`supplier-${supplierColor(negotiation.supplier_company_id)} ${awarded ? "is-awarded" : ""}`} key={negotiation.id}>
+                          <th scope="row" data-label="Distribuidor">
+                            <span className="supplier-key" aria-hidden="true" />
+                            <span className="offer-name"><span>{name}</span>{awarded ? <em>{awardedLabel}</em> : null}</span>
+                          </th>
+                          <td data-label="Oferta inicial">{initialTotal && moneyToCents(initialTotal) > 0n ? formatMoney(initialTotal) : <span className="offer-empty">—</span>}</td>
+                          <td className="offer-final" data-label="Oferta final">
+                            {finalOfferTotal === null ? <span className="offer-pending">Pendiente</span> : noCoverage ? <span className="offer-nostock">Sin stock</span> : <strong>{formatMoney(finalOfferTotal)}</strong>}
+                          </td>
+                          <td className={reduction !== null && reduction > 0 ? "positive-text" : ""} data-label="Baja">{reduction !== null && !noCoverage ? `${formatNumber(reduction)} %` : <span className="offer-empty">—</span>}</td>
+                          <td data-label="Entrega">{deliveryDate ? formatDayMonth(deliveryDate) : <span className="offer-empty">—</span>}</td>
+                          {items.length > 1 ? <td data-label="Productos">{noCoverage ? <span className="offer-empty">0 de {items.length}</span> : coveredLines !== null ? `${coveredLines} de ${items.length}` : <span className="offer-empty">—</span>}</td> : null}
+                          <td className="offer-actions">
+                            <ConversationModal
+                              finalOfferTotal={finalOfferTotal && !noCoverage ? formatMoney(finalOfferTotal) : undefined}
+                              messageCount={messages.length}
+                              productName={requestItem?.description ?? "Pedido"}
+                              supplierName={name}
+                              variant="inline"
+                            >
+                              <div className="conversation-thread">
+                                {messages.length === 0 ? <p className="muted">La conversación todavía no empezó.</p> : null}
+                                {messages.map((message) => {
+                                  const buyerSentMessage = message.sender_company_id === company.id;
+                                  const facts = getMessageFacts(message.payload);
+                                  return (
+                                    <article className={buyerSentMessage ? "debate-message buyer-message" : "debate-message supplier-message"} key={message.id}>
+                                      <div className="message-heading">
+                                        <strong>{threadMessageLabels.get(message.id) ?? message.message_type}</strong>
+                                        <time dateTime={message.sent_at}>{formatDateTime(message.sent_at)}</time>
+                                      </div>
+                                      <p className="message-sender">{buyerSentMessage ? `Agente comprador · ${company.legal_name}` : `Agente vendedor · ${name}`}</p>
+                                      {facts.length > 0 ? (
+                                        <dl className="message-facts">
+                                          {facts.map((fact) => <div key={`${message.id}-${fact.label}`}><dt>{fact.label}</dt><dd>{fact.value}</dd></div>)}
+                                        </dl>
+                                      ) : null}
+                                      {typeof message.payload.notes === "string" ? <p className="message-notes">{message.payload.notes}</p> : null}
+                                      <details className="message-raw">
+                                        <summary>Ver mensaje completo</summary>
+                                        <pre>{JSON.stringify(message.raw_message, null, 2)}</pre>
+                                      </details>
+                                    </article>
+                                  );
+                                })}
+                              </div>
+                            </ConversationModal>
+                            {supplierContexts.length > 0 && supplier ? (
+                              <ContextModal
+                                eyebrow="Contexto privado del distribuidor"
+                                sections={supplierContextSections(supplierContexts)}
+                                snapshots={supplierSnapshots}
+                                subtitle="Stock, costos e historial que usó este distribuidor para negociar."
+                                title={supplier.legal_name}
+                                triggerLabel="Datos"
+                              />
+                            ) : null}
+                          </td>
+                        </tr>
                       );
                     })}
-                  </div>
-                ) : null}
-                {metrics.length > 0 ? (
-                  <div className="analytics-grid account-analytics">
-                    <div><span>Respuestas finales</span><strong>{metrics.length} / 3</strong></div>
-                    <div><span>Mejor total</span><strong>{formatArs(centsToMoney(minimumTotal))}</strong></div>
-                    <div><span>Brecha entre opciones</span><strong>{formatArs(centsToMoney(maximumTotal - minimumTotal))}</strong></div>
-                    <div><span>Baja promedio</span><strong>{averageReduction.toFixed(2)}%</strong></div>
-                    <div><span>Mensajes trazados</span><strong>{totalMessages}</strong></div>
-                  </div>
-                ) : null}
-                {recommendationRun ? (
-                  <div className="recommendation-card">
-                    <p className="eyebrow">Recomendación del agente comprador</p>
-                    <h3>
-                      {typeof recommendationRun.output.summary === "string"
-                        ? recommendationRun.output.summary
-                        : "Comparación terminada"}
-                    </h3>
-                    {Array.isArray(recommendationRun.output.ranking) ? (
-                      <div className="ranking-list">
-                        {(recommendationRun.output.ranking as Array<Record<string, unknown>>)
-                          .sort((left, right) => Number(left.position) - Number(right.position))
-                          .map((entry) => {
-                            const offerId = String(entry.offerId ?? "");
-                            const negotiation = request.negotiations.find((candidate) =>
-                              candidate.offers.some((offer) => offer.id === offerId),
-                            );
-                            const supplier = suppliers.find(
-                              (candidate) => candidate.id === negotiation?.supplier_company_id,
-                            );
-                            return (
-                              <article className="ranking-item" key={offerId}>
-                                <strong>#{String(entry.position)} · {supplier?.legal_name ?? "Distribuidor"}</strong>
-                                <span>{String(entry.reason ?? "")}</span>
-                              </article>
-                            );
-                          })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
+
+
+          {recommendationRun && request.purchase_orders.length === 0 && Array.isArray(recommendationRun.output.allocations) ? (
+            <section className="entry-section">
+              <h4 className="entry-label">Qué recomienda Hermes</h4>
+              <ul className="rank-list allocations">
+                {(recommendationRun.output.allocations as Array<Record<string, unknown>>).map((entry) => {
+                  const supplier = suppliers.find((candidate) => candidate.legal_name === String(entry.supplierName ?? ""));
+                  const item = items.find((candidate) => candidate.product_id === String(entry.productId));
+                  return (
+                    <li className={`supplier-${supplierColor(supplier?.id)}`} key={String(entry.requestItemId)}>
+                      <span className="supplier-key" aria-hidden="true" />
+                      <div>
+                        <strong>{item?.description ?? String(entry.productId)} <span aria-hidden="true">→</span> {String(entry.supplierName ?? "Distribuidor")}</strong>
+                        <span>{formatQuantity(String(entry.quantity ?? 0), item?.unit ?? "unidad")} por {formatMoney(String(entry.total ?? 0))}</span>
                       </div>
-                    ) : null}
-                    {Array.isArray(recommendationRun.output.allocations) ? (
-                      <div className="ranking-list">
-                        {(recommendationRun.output.allocations as Array<Record<string, unknown>>).map((entry) => (
-                          <article className="ranking-item" key={String(entry.requestItemId)}>
-                            <strong>
-                              {String(entry.productId)} · {String(entry.supplierName ?? "Distribuidor")}
-                            </strong>
-                            <span>
-                              {String(entry.quantity)} unidades · {formatMoney(String(entry.total ?? 0))} · {String(entry.reason ?? "Adjudicación elegible")}
-                            </span>
-                          </article>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                {request.status === "AWAITING_APPROVAL" ? (
-                  <ApproveRequestForm
-                    companyId={company.id}
-                    purchaseRequestId={request.id}
-                    suppliers={suppliers}
-                  />
-                ) : null}
-                {(["NEGOTIATING", "RECOMMENDED"].includes(request.status) &&
-                  missingFinalOffers > 0) ||
-                (request.status === "NEGOTIATING" && hasAllFinalOffers) ? (
-                  <div className="action-row">
-                    <TenderAgentsButton
-                      companyId={company.id}
-                      hasOffers={activeOffers.length > 0}
-                      missingFinalOffers={missingFinalOffers}
-                      purchaseRequestId={request.id}
-                    />
-                    {hasAllFinalOffers && request.status === "NEGOTIATING" ? (
-                      <RecommendationButton companyId={company.id} purchaseRequestId={request.id} />
-                    ) : null}
-                  </div>
-                ) : null}
-              </article>
-            );
-          })}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ) : null}
+
+          {request.status === "AWAITING_APPROVAL" ? (
+            <section className="entry-section entry-action">
+              <h4 className="entry-label">Aprobación</h4>
+              <ApproveRequestForm companyId={company.id} purchaseRequestId={request.id} suppliers={suppliers} />
+            </section>
+          ) : null}
+          {showTenderActions ? (
+            <section className="entry-section entry-action">
+              <h4 className="entry-label">Siguiente paso</h4>
+              <div className="action-row">
+                <TenderAgentsButton companyId={company.id} hasOffers={activeOffers.length > 0} missingFinalOffers={missingFinalOffers} purchaseRequestId={request.id} />
+                {hasAllFinalOffers && request.status === "NEGOTIATING" ? <RecommendationButton companyId={company.id} purchaseRequestId={request.id} /> : null}
+              </div>
+            </section>
+          ) : null}
         </div>
-      </section>
+      </details>
+    );
+  }
+
+  return (
+    <main className="shell ledger-shell">
+      <header className="ledger-heading" id="negociaciones">
+        <div>
+          <h2>Negociaciones</h2>
+        </div>
+      </header>
+
+      {requests.length === 0 ? (
+        <div className="ledger-empty">
+          <strong>Todavía no hay pedidos en negociación.</strong>
+          <p>Cuando envíes un pedido desde Inicio, Hermes lo va a listar acá con el estado de cada conversación.</p>
+        </div>
+      ) : null}
+
+      {groups.map((group) => (
+        <section className={`ledger-group tone-${group.tone}`} key={group.tone} aria-labelledby={`ledger-${group.tone}`}>
+          <header className="ledger-group-head">
+            <h3 id={`ledger-${group.tone}`}><span className="ledger-dot" aria-hidden="true" />{group.title}<span className="ledger-count">{group.requests.length}</span></h3>
+            <p>{group.hint}</p>
+          </header>
+          <div className="ledger-list">
+            {group.requests.map((request) => renderRequest(request, request.id === firstOpenId))}
+          </div>
+        </section>
+      ))}
     </main>
   );
 }

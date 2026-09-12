@@ -93,7 +93,7 @@ export async function getTenderSnapshot(requestId: string, buyerCompanyId: strin
     events.push({ id: log.id, sequence: 0, requestId, tenderRoundId: round?.id ?? null, phase: "error", timestamp: log.occurredAt.toISOString(), message: String(data.message), ...(typeof data.supplierId === "string" ? { supplierId: data.supplierId } : {}) });
   }
   if (finished) events.push({ id: finished.id, sequence: 0, requestId, tenderRoundId: round?.id ?? null, phase: "complete", timestamp: finished.occurredAt.toISOString(), status: String((finished.payload as Record<string, unknown>).status), summary: presentationSummary });
-  const phaseOrder = ["creation", "rfq", "initial_offer", "counteroffer", "final_offer", "award", "orders", "payment", "error", "complete"];
+  const phaseOrder = ["creation", "rfq", "initial_offer", "counteroffer", "improved_offer", "final_offer", "award", "orders", "payment", "error", "complete"];
   events.sort((a, b) => a.timestamp.localeCompare(b.timestamp) || phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase));
   events.forEach((event, index) => { event.sequence = index + 1; });
   return { requestId, tenderRoundId: round?.id ?? null, status: request.status, running: !!latestStart && !finished, events, summary: presentationSummary };

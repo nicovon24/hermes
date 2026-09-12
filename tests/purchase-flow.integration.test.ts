@@ -36,6 +36,7 @@ import { getTenderSnapshot } from "@/modules/protocol/services/tender-snapshot";
 import { createPurchaseRequest } from "@/modules/protocol/services/purchase-requests";
 import { requireBuyerActor } from "@/lib/demo-workspace";
 import { suppliers } from "@/modules/protocol/domain/purchase-flow";
+import { MAX_SUPPLIER_EXCHANGES } from "@/modules/protocol/domain/negotiation-rounds";
 
 const buyer = "00000000-0000-4000-8000-000000000001";
 const buyerWallet = "0x0000000000000000000000000000000000000001" as Address;
@@ -83,7 +84,18 @@ describe.skipIf(!probe.enabled)("purchase flow · isolated Postgres", () => {
     expect(result.events.filter((event) => event.phase === "error")).toHaveLength(0);
     expect(result.summary).toMatchObject({ orderCount: 3, coveredProducts: 3, pendingProducts: 0 });
     expect(probe.peak).toBe(3);
-    for (const supplier of suppliers) expect(probe.starts.filter((call) => call.supplier === supplier.id).map((call) => call.type)).toEqual(["request_for_quote", "offer", "counteroffer", "final_offer"]);
+    // Each distributor haggles for as many passes as it is willing to, but the
+    // thread always alternates and always closes with a final offer.
+    for (const supplier of suppliers) {
+      const thread = probe.starts.filter((call) => call.supplier === supplier.id).map((call) => call.type);
+      const exchanges = thread.filter((type) => type === "counteroffer").length;
+      expect(thread.slice(0, 2)).toEqual(["request_for_quote", "offer"]);
+      expect(thread.at(-1)).toBe("final_offer");
+      expect(exchanges).toBeGreaterThanOrEqual(1);
+      expect(exchanges).toBeLessThanOrEqual(MAX_SUPPLIER_EXCHANGES);
+      expect(thread).toHaveLength(2 + exchanges * 2);
+      expect(thread.slice(2).filter((_, index) => index % 2 === 0)).toEqual(Array(exchanges).fill("counteroffer"));
+    }
     const award = events.findIndex((event) => event.phase === "award");
     expect(events.slice(0, award).filter((event) => event.phase === "final_offer")).toHaveLength(3);
     expect(events.map((event) => event.sequence)).toEqual(events.map((_, i) => i + 1));
@@ -120,7 +132,8 @@ describe.skipIf(!probe.enabled)("purchase flow · isolated Postgres", () => {
     const retried = await launchPurchaseFlow({ kind: "retry", buyerCompanyId: buyer, requestId: request.requestId, operationId: randomUUID() });
     expect(retried.summary.orderCount).toBe(3);
     expect(retried.tenderRoundId).toBe(failed.tenderRoundId);
-    expect(retried.events.filter((event) => event.messageId)).toHaveLength(12);
+    expect(retried.events.filter((event) => event.messageId)).toHaveLength(await prisma.negotiationMessage.count({ where: { purchaseRequestId: request.requestId } }));
+    expect(retried.events.filter((event) => event.phase === "final_offer")).toHaveLength(3);
     expect(retried.events.map((event) => event.id)).toEqual(expect.arrayContaining(initialIds));
     expect(retried.events.filter((event) => event.phase === "error")).toHaveLength(0);
   });

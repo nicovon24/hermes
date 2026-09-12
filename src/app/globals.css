@@ -146,7 +146,8 @@ h3 { margin: .65rem 0 .3rem; font-size: 1.15rem; }
 .final-offer-label, .pending-offer-label { color: var(--muted); font-size: .7rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
 .final-offer-label { color: var(--success); }
 .debate-thread { display: grid; gap: .6rem; max-height: 28rem; margin-top: .8rem; padding: .15rem .45rem .15rem .05rem; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.debate-message { display: grid; gap: .45rem; padding: .75rem; border-radius: .6rem; font-size: .78rem; line-height: 1.4; }
+/* A bounded column: without it the widest fact stretches the message's grid track past the bubble and the thread reads cut off. */
+.debate-message { display: grid; grid-template-columns: minmax(0, 1fr); gap: .45rem; padding: .75rem; border-radius: .6rem; font-size: .78rem; line-height: 1.4; }
 .debate-message span { color: var(--muted); }
 .message-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
 .message-heading time { flex: none; color: var(--muted); font-size: .68rem; }
@@ -201,13 +202,16 @@ h3 { margin: .65rem 0 .3rem; font-size: 1.15rem; }
 .conversation-dialog { width: min(980px, calc(100% - 1.25rem)); max-width: none; max-height: 92dvh; margin: auto; padding: 0; overflow: hidden; color: var(--ink); border: 1px solid var(--line); border-radius: 1rem; background: var(--bg); box-shadow: 0 28px 90px var(--shadow-color); }
 .conversation-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(5px); }
 .conversation-modal-shell { display: grid; grid-template-rows: auto minmax(0, 1fr); height: min(92dvh, 920px); }
+/* Both shells open from inside table cells, so they reset what those cells inherit. */
+.conversation-modal-shell, .context-modal-shell { text-align: left; white-space: normal; }
 .conversation-modal-header { position: relative; z-index: 1; }
 .conversation-header-actions { display: flex; align-items: flex-start; gap: .65rem; }
-.final-offer-chip, .pending-offer-chip { padding: .55rem .7rem; border-radius: 999px; font-size: .75rem; font-weight: 750; white-space: nowrap; }
+.final-offer-chip, .pending-offer-chip, .empty-offer-chip { padding: .55rem .7rem; border-radius: 999px; font-size: .75rem; font-weight: 750; white-space: nowrap; }
+.empty-offer-chip { color: var(--danger); background: var(--danger-bg); border: 1px solid var(--line); }
 .final-offer-chip { color: var(--success); background: var(--success-bg); border: 1px solid var(--line); }
 .pending-offer-chip { color: var(--warning); background: var(--warning-bg); border: 1px solid var(--line); }
 .conversation-modal-body { min-height: 0; padding: 1.35rem clamp(1rem, 3vw, 2.25rem) 2rem; overflow-y: scroll; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.conversation-thread { display: grid; gap: .9rem; max-width: 780px; margin: 0 auto; }
+.conversation-thread { display: grid; grid-template-columns: minmax(0, 1fr); gap: .9rem; max-width: 780px; margin: 0 auto; }
 .conversation-thread .debate-message { padding: 1rem; font-size: .9rem; }
 .conversation-thread .message-heading time { font-size: .75rem; }
 .conversation-thread .message-sender { font-size: .78rem; }

@@ -6,7 +6,12 @@ import type {
   ConsolidatedDraftProduct,
   ConsolidatedPurchaseDraft,
 } from "@/modules/context/replenishment";
+import { arrivedProductIds, inTransitMap, type InTransitLine } from "@/modules/protocol/domain/in-transit";
+import { CloseGlyph } from "./close-glyph";
+import { formatQuantity } from "./request-ledger";
 import { usePurchaseFlow } from "./purchase-flow-provider";
+
+const ARRIVAL_HIGHLIGHT_MS = 9000;
 
 type EditableLine = Pick<
   ConsolidatedDraftProduct,
@@ -24,11 +29,14 @@ export function BuyerOrderWorkspace({
   draft,
   compact = false,
   directOrder = false,
+  initialInTransit = [],
 }: {
   companyId: string;
   draft: ConsolidatedPurchaseDraft;
   compact?: boolean;
   directOrder?: boolean;
+  /** Units already paid for and still travelling, per product, at first paint. */
+  initialInTransit?: InTransitLine[];
 }) {
   const [lines, setLines] = useState<EditableLine[]>(() =>
     draft.products
@@ -48,6 +56,10 @@ export function BuyerOrderWorkspace({
   const [orderingProduct, setOrderingProduct] = useState<ConsolidatedDraftProduct | null>(null);
   const [predictedQuantity, setPredictedQuantity] = useState("1");
   const orderDialog = useRef<HTMLDialogElement>(null);
+  const [purchased, setPurchased] = useState<InTransitLine[]>(initialInTransit);
+  const [arrived, setArrived] = useState<Set<string>>(() => new Set());
+  const purchasedRef = useRef(initialInTransit);
+  const arrivalTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const { launchForm, automaticPayments: autoPay, pending, error } = usePurchaseFlow();
   const action = (data: FormData) => launchForm("new", companyId, data);
   const selectedIds = useMemo(
@@ -64,6 +76,37 @@ export function BuyerOrderWorkspace({
       orderDialog.current.showModal();
     }
   }, [orderingProduct]);
+
+  // A confirmed payment means those units are on their way: the stream pushes
+  // the new totals and the row moves them to "En tránsito" on the spot.
+  useEffect(() => {
+    if (compact || typeof EventSource === "undefined") return;
+    const source = new EventSource(`/api/companies/${companyId}/in-transit/stream`);
+    const timers = arrivalTimers.current;
+    source.addEventListener("in-transit", (event) => {
+      let next: InTransitLine[];
+      try { next = JSON.parse((event as MessageEvent<string>).data) as InTransitLine[]; } catch { return; }
+      const justArrived = arrivedProductIds(purchasedRef.current, next);
+      purchasedRef.current = next;
+      setPurchased(next);
+      if (!justArrived.length) return;
+      setArrived((current) => new Set([...current, ...justArrived]));
+      timers.push(setTimeout(() => {
+        setArrived((current) => {
+          const remaining = new Set(current);
+          justArrived.forEach((productId) => remaining.delete(productId));
+          return remaining;
+        });
+      }, ARRIVAL_HIGHLIGHT_MS));
+    });
+    return () => {
+      source.close();
+      timers.forEach(clearTimeout);
+      timers.length = 0;
+    };
+  }, [companyId, compact]);
+
+  const travelling = useMemo(() => inTransitMap(purchased), [purchased]);
 
   function addProduct(product: ConsolidatedDraftProduct) {
     if (selectedIds.has(product.productId)) return;
@@ -108,7 +151,7 @@ export function BuyerOrderWorkspace({
     <div className={`buyer-order-workspace ${compact ? "compact" : ""}`}>
       {!compact ? (
         <section aria-labelledby="products-title" className="workspace-section" id="productos">
-          <div className="section-heading">
+          <div className="section-heading" data-tour="pedido">
             <div>
               <p className="eyebrow">Catálogo</p>
               {directOrder
@@ -129,13 +172,15 @@ export function BuyerOrderWorkspace({
             <table className="inventory-table"><thead><tr><th scope="col">Producto</th><th scope="col">Estado</th><th scope="col">Disponible</th><th scope="col">En tránsito</th><th scope="col">Ventas · 30 días</th><th scope="col"><span className="sr-only">Acción</span></th></tr></thead><tbody>
             {visibleProducts.map((product) => {
               const selected = selectedIds.has(product.productId);
+              const bought = travelling.get(product.productId) ?? 0;
+              const inTransit = product.inTransit + bought;
               const lowStock = product.availableStock < product.unitsSoldLast30Days / 2;
               return (
                 <tr key={product.productId}>
                   <th scope="row"><strong>{product.description}</strong><small>{product.productId} · {product.unit}</small></th>
                   <td><span className={`stock-state ${lowStock ? "danger" : product.automaticallySelected ? "warning" : ""}`} title={lowStock ? "El stock disponible es menor a la mitad de las ventas de los últimos 30 días." : product.reason}><span aria-hidden="true">●</span> {lowStock ? "Bajo stock" : product.automaticallySelected ? "A reponer" : "Disponible"}</span></td>
                   <td>{product.availableStock} <small>{product.unit}</small></td>
-                  <td>{product.inTransit} <small>{product.unit}</small></td>
+                  <td className={`in-transit-cell ${arrived.has(product.productId) ? "is-arriving" : ""}`} title={bought > 0 ? `Incluye ${formatQuantity(bought, product.unit)} de pedidos ya pagados, en camino.` : undefined}>{inTransit} <small>{product.unit}</small></td>
                   <td>{product.unitsSoldLast30Days} <small>{product.unit}</small></td>
                   <td>{directOrder ? (
                     <div className="inventory-order-form">
@@ -172,7 +217,7 @@ export function BuyerOrderWorkspace({
               }}>
                 <div className="order-prediction-heading">
                   <div><p className="eyebrow">Predicción de compra</p><h2 id="order-prediction-title">{orderingProduct.description}</h2></div>
-                  <button aria-label="Cerrar" className="icon-button" onClick={() => setOrderingProduct(null)} type="button">×</button>
+                  <button aria-label="Cerrar" className="icon-button" onClick={() => setOrderingProduct(null)} type="button"><CloseGlyph /></button>
                 </div>
                 <div className="prediction-callout"><span>Ventas del último mes</span><strong>{orderingProduct.unitsSoldLast30Days} {orderingProduct.unit}</strong></div>
                 <label className="prediction-quantity">Objetivo de compra<input min="1" name="targetQuantity" onChange={(event) => setPredictedQuantity(event.target.value)} required step="1" type="number" value={predictedQuantity} /><small>Predicción determinista: 50% de lo vendido en los últimos 30 días.</small></label>

@@ -2,19 +2,32 @@
 
 import { type ReactNode, useId, useRef } from "react";
 
+import { CloseGlyph } from "./close-glyph";
+
 export function ConversationModal({
   supplierName,
   productName,
   messageCount,
   finalOfferTotal,
+  offerStatus,
+  variant = "card",
+  triggerLabel = "Ver conversación completa",
   children,
 }: {
   supplierName: string;
   productName: string;
   messageCount: number;
   finalOfferTotal?: string;
+  /** Overrides the header chip when the round ended without an offer to quote. */
+  offerStatus?: { label: string; tone: "final" | "pending" | "empty" };
+  /** `inline` renders a quiet text trigger for dense layouts such as tables. */
+  variant?: "card" | "inline";
+  triggerLabel?: string;
   children: ReactNode;
 }) {
+  const status = offerStatus ?? (finalOfferTotal
+    ? { label: `Oferta final ${finalOfferTotal}`, tone: "final" as const }
+    : { label: "Oferta final pendiente", tone: "pending" as const });
   const dialogRef = useRef<HTMLDialogElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -33,10 +46,16 @@ export function ConversationModal({
 
   return (
     <>
-      <button className="conversation-trigger" onClick={openDialog} type="button">
-        Ver conversación completa
-        <span>{messageCount} mensajes</span>
-      </button>
+      {variant === "inline" ? (
+        <button aria-label={`Ver la conversación con ${supplierName}, ${messageCount} mensajes`} className="conversation-link" onClick={openDialog} type="button">
+          {messageCount} {messageCount === 1 ? "mensaje" : "mensajes"} <span aria-hidden="true">↗</span>
+        </button>
+      ) : (
+        <button className="conversation-trigger" onClick={openDialog} type="button">
+          {triggerLabel}
+          <span>{messageCount} {messageCount === 1 ? "mensaje" : "mensajes"}</span>
+        </button>
+      )}
       <dialog
         aria-labelledby={titleId}
         className="conversation-dialog"
@@ -48,16 +67,11 @@ export function ConversationModal({
         <div className="conversation-modal-shell">
           <header className="context-modal-header conversation-modal-header">
             <div>
-              <p className="eyebrow">Flujo completo de negociación</p>
               <h2 id={titleId}>{supplierName}</h2>
-              <p>{productName} · conversación ordenada desde la licitación hasta el cierre.</p>
+              <p>{productName}</p>
             </div>
             <div className="conversation-header-actions">
-              <span className={finalOfferTotal ? "final-offer-chip" : "pending-offer-chip"}>
-                {finalOfferTotal
-                  ? `Oferta final · ${finalOfferTotal}`
-                  : "Oferta final pendiente"}
-              </span>
+              <span className={`${status.tone}-offer-chip`}>{status.label}</span>
               <button
                 aria-label="Cerrar conversación"
                 autoFocus
@@ -65,7 +79,7 @@ export function ConversationModal({
                 onClick={closeDialog}
                 type="button"
               >
-                ×
+                <CloseGlyph />
               </button>
             </div>
           </header>

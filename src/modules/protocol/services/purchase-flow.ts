@@ -83,11 +83,17 @@ export async function launchPurchaseFlow(unsafeInput: LaunchPurchaseFlowInput, o
     // A retry of uncovered products starts a new round. Do not replay the
     // previous round's order summary as if it belonged to the new launch.
     if (input.kind !== "retry") await publish();
-    await runMultiProductTenderAgents(actor, input.requestId, { onProgress: publish, operationId: input.operationId, createOrders: false });
+    // With auto pay on, the mandate authorizes creating the orders and paying
+    // them as soon as the round closes. Otherwise the buyer confirms from the
+    // recommendation ("Generar pedido") and the flow stops at RECOMMENDED.
+    const mandate = await prisma.mandate.findFirst({ where: { purchaseRequestId: input.requestId, status: "ACTIVE" }, orderBy: { version: "desc" }, select: { autoPay: true } });
+    const autoPay = mandate?.autoPay ?? false;
+    await runMultiProductTenderAgents(actor, input.requestId, { onProgress: publish, operationId: input.operationId, createOrders: autoPay });
     await publish();
-    const createdOrders = await prisma.purchaseOrder.count({ where: { purchaseRequestId: input.requestId } });
+    const createdOrders = autoPay ? await prisma.purchaseOrder.count({ where: { purchaseRequestId: input.requestId } }) : 0;
     if (createdOrders > 0) {
-      await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish);
+      // Orders have already reached the browser before waiting for payment receipts.
+      await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish, input.kind === "retry" ? "ARBITRUM_DIRECT" : input.conditions.route ?? "ARBITRUM_DIRECT");
       await publish();
     }
     const settled = await prisma.purchaseRequest.findUniqueOrThrow({ where: { id: input.requestId } });

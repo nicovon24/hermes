@@ -44,6 +44,55 @@ describe("public tender metrics", () => {
   it("does not expose private context in a public event", () => {
     expect(JSON.stringify(messageProgress("request", [message("1", "offer", "100")], 2))).not.toContain("privateSupplierContext");
   });
+  it("turns every negotiation message into a readable chat turn without the raw payload", () => {
+    const rfq: ProgressMessage = { ...message("1", "request_for_quote", "0"), payload: { items: [{ productId: "milk" }, { productId: "flour" }], requiredBy: "2026-09-20", paymentTerms: "CONTADO", notes: "Cotizar todas las líneas.", privateSupplierContext: { cost: "50" } } };
+    const empty: ProgressMessage = { ...message("2", "final_offer", "0"), payload: { total: "0.00", deliveryDate: "2026-09-17", lines: [], unavailableItems: [{ productId: "milk" }, { productId: "flour" }], notes: "Sin inventario disponible." } };
+    const [request, offerTurn] = messageProgress("request", [rfq, empty], 2).map((event) => event.chat!);
+    expect(request).toMatchObject({ role: "buyer", label: "Licitación enviada", notes: "Cotizar todas las líneas." });
+    expect(request.facts).toEqual([{ label: "Productos solicitados", value: "2" }, { label: "Necesario para", value: "20/09" }, { label: "Condiciones", value: "CONTADO" }]);
+    expect(offerTurn).toMatchObject({ role: "supplier", label: "Oferta final", notes: "Sin inventario disponible." });
+    expect(offerTurn.facts).toEqual([{ label: "Productos cotizados", value: "0 de 2" }, { label: "Sin stock", value: "2" }]);
+    expect(JSON.stringify(messageProgress("request", [rfq], 2))).not.toContain("privateSupplierContext");
+    expect(messageProgress("request", [message("3", "payment_status", "0")], 2)[0]?.chat).toBeUndefined();
+  });
+});
+
+describe("a negotiation that takes several passes", () => {
+  const thread = messageProgress("request", [
+    message("1", "request_for_quote", "0"),
+    message("2", "offer", "1000"),
+    message("3", "counteroffer", "880"),
+    message("4", "offer", "940"),
+    message("5", "counteroffer", "900"),
+    message("6", "final_offer", "915"),
+  ], 1);
+
+  it("reads the distributor's later answers as improvements, not as new openings", () => {
+    expect(thread.map((event) => event.phase)).toEqual(["rfq", "initial_offer", "counteroffer", "improved_offer", "counteroffer", "final_offer"]);
+    expect(thread.map((event) => event.direction)).toEqual(["outbound", "inbound", "outbound", "inbound", "outbound", "inbound"]);
+    expect(thread.map((event) => event.exchange)).toEqual([undefined, undefined, 1, 1, 2, 2]);
+  });
+  it("measures every answer against the opening price, so the haggling shows up as a saving", () => {
+    expect(thread[3].metrics?.saving).toMatchObject({ amount: "60.00", percentage: 6 });
+    expect(thread[5].metrics?.saving).toMatchObject({ amount: "85.00", percentage: 8.5 });
+    // The closing price is read against the number the buyer had just asked for.
+    expect(thread[5].metrics?.targetGap).toMatchObject({ amount: "-15.00" });
+  });
+  it("fills the branch as the conversation advances instead of bouncing between two phases", () => {
+    const progress = thread.map((event) => event.progress!);
+    expect(progress.every((value, index) => index === 0 || value > progress[index - 1])).toBe(true);
+    expect(progress.at(-1)).toBe(100);
+  });
+  it("names the round from the second pass on", () => {
+    expect(thread.map((event) => event.chat?.label)).toEqual([
+      "Licitación enviada",
+      "Oferta inicial",
+      "Contraoferta del comprador",
+      "Mejora del proveedor",
+      "Contraoferta del comprador · ronda 2",
+      "Oferta final",
+    ]);
+  });
 });
 
 describe("progress replay", () => {
