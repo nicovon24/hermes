@@ -67,7 +67,7 @@ export async function launchPurchaseFlow(unsafeInput: LaunchPurchaseFlowInput, o
     await runMultiProductTenderAgents(actor, input.requestId, { onProgress: publish, operationId: input.operationId });
     await publish();
     // Orders have already reached the browser before waiting for payment receipts.
-    await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish);
+    await runAutomaticPaymentsForPurchaseRequest(actor, input.requestId, undefined, publish, input.kind === "retry" ? "ARBITRUM_DIRECT" : input.conditions.route ?? "ARBITRUM_DIRECT");
     await publish();
     const settled = await prisma.purchaseRequest.findUniqueOrThrow({ where: { id: input.requestId } });
     if (settled.status === "PAYMENT_REVIEW_REQUIRED") throw new DomainError("Los pedidos ya están disponibles. Revisá los pagos que no pudieron confirmarse antes de volver a ejecutarlos.", "CONFLICT", 409);
