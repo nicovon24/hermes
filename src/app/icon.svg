@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="hermes-icon" x1="8" y1="54" x2="58" y2="8" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#75cedd"/>
+      <stop offset=".52" stop-color="#b5a3ee"/>
+      <stop offset="1" stop-color="#e5bd7c"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="#09090b"/>
+  <path fill="url(#hermes-icon)" d="M8 51C14 27 31 15 59 8 46 21 32 35 8 51Zm2 2c15-12 27-20 44-27-7 17-23 27-44 27Zm2 4c16-4 27-9 35-12-7 11-19 16-35 12Z"/>
+</svg>

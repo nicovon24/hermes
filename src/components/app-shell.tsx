@@ -47,6 +47,8 @@ export function AppShell({ accounts, automaticPaymentsAvailable, children }: { a
     setAutomaticPayments((current) => !current);
   };
 
+  if (pathname === "/") return <>{children}</>;
+
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Ir al contenido</a>
     {menuOpen ? <button type="button" className="nav-backdrop" aria-label="Cerrar navegación" onClick={closeMenu} tabIndex={-1} /> : null}
