@@ -381,6 +381,7 @@ model Payment {
   chainId              Int            @map("chain_id")
   tokenAddress         String         @map("token_address")
   tokenSymbol          String         @default("ARGt") @map("token_symbol")
+  route                String         @default("ARBITRUM_DIRECT")
   amountBaseUnits      String         @map("amount_base_units")
   status               PaymentStatus  @default(PAYMENT_REQUESTED)
   txHash               String?        @unique(map: "Payment_txHash_key") @map("tx_hash")
