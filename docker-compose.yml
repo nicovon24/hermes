@@ -1,0 +1,10 @@
+services:
+  hermes-payments:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      ARBITRUM_RPC_URL: ${ARBITRUM_RPC_URL:-https://arb1.arbitrum.io/rpc}
+      REQUIRED_CONFIRMATIONS: ${REQUIRED_CONFIRMATIONS:-1}
+      AGENT_PRIVATE_KEY: ${AGENT_PRIVATE_KEY:-}
+      MAX_PAYMENT_BASE_UNITS: ${MAX_PAYMENT_BASE_UNITS:-30000000000000000000000}
