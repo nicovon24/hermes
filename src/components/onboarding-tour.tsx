@@ -117,13 +117,7 @@ export function OnboardingTour({ homePath, requestCount }: { homePath: string; r
   const hole = box ? { top: box.top - PADDING, left: box.left - PADDING, width: box.width + PADDING * 2, height: box.height + PADDING * 2 } : null;
   const last = step === tourSteps.length - 1;
   return <div className="tour" role="presentation">
-    {hole ? <>
-      <div className="tour-shade" style={{ top: 0, left: 0, right: 0, height: Math.max(0, hole.top) }} />
-      <div className="tour-shade" style={{ top: hole.top + hole.height, left: 0, right: 0, bottom: 0 }} />
-      <div className="tour-shade" style={{ top: hole.top, left: 0, width: Math.max(0, hole.left), height: hole.height }} />
-      <div className="tour-shade" style={{ top: hole.top, left: hole.left + hole.width, right: 0, height: hole.height }} />
-      <div className="tour-ring" style={hole} />
-    </> : <div className="tour-shade" style={{ inset: 0 }} />}
+    {hole ? <div className="tour-ring" style={hole} /> : <div className="tour-shade" style={{ inset: 0 }} />}
     <div ref={card} className="tour-card" role="dialog" aria-modal="true" aria-labelledby="tour-title" tabIndex={-1} style={placement ? { top: placement.top, left: placement.left } : { visibility: "hidden" }}>
       <p className="eyebrow">Paso {step + 1} de {tourSteps.length}</p>
       <h3 id="tour-title">{current.title}</h3>
