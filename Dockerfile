@@ -10,4 +10,4 @@ RUN npm run build
 
 ENV NODE_ENV=production
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["sh", "-c", "npx prisma migrate deploy && npm start"]

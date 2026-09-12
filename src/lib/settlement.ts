@@ -1,6 +1,10 @@
 import { Connection } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddress } from "@solana/spl-token";
 import { prisma } from "@/lib/prisma";
-import { ARGt, argtAbi, agentWalletClient } from "@/lib/chain";
+import { ARGt, argtAbi, agentWalletClient, publicClient } from "@/lib/chain";
+import { formatEther } from "viem";
+import { solanaAgentKeypair } from "@/lib/solana";
 
 export async function settleFromSolana(paymentId: string, sourceSignature: string) {
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
@@ -17,13 +21,21 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
   if (!transaction) throw new Error("Source Solana transaction not found");
   const expectedMint = process.env.SOLANA_TEST_MINT_ADDRESS;
   if (!expectedMint) throw new Error("SOLANA_TEST_MINT_ADDRESS is not configured");
-  const expectedAmount = BigInt(payment.amountBaseUnits) / 10n ** 12n; // ARGt 18 decimals → SPL test token 6 decimals
+  const baseUnits = BigInt(payment.amountBaseUnits);
+  const conversion = 10n ** 12n; // ARGt 18 decimals → SPL test token 6 decimals
+  if (baseUnits <= 0n || baseUnits % conversion !== 0n) throw new Error("Payment amount is not representable by the Solana token decimals");
+  const expectedAmount = baseUnits / conversion;
+  if (expectedAmount > 18446744073709551615n) throw new Error("Payment amount exceeds SPL token range");
+  const expectedAuthority = solanaAgentKeypair().publicKey.toBase58();
+  const expectedDestinationWallet = process.env.SOLANA_SETTLEMENT_WALLET;
+  if (!expectedDestinationWallet) throw new Error("SOLANA_SETTLEMENT_WALLET is not configured");
+  const expectedDestination = (await getAssociatedTokenAddress(new PublicKey(expectedMint), new PublicKey(expectedDestinationWallet))).toBase58();
   const matchingTransfer = transaction.transaction.message.instructions.some((instruction) => {
     if (!("parsed" in instruction) || !instruction.parsed || typeof instruction.parsed !== "object") return false;
-    const parsed = instruction.parsed as { type?: string; info?: { mint?: string; amount?: string; tokenAmount?: { amount?: string } } };
+    const parsed = instruction.parsed as { type?: string; info?: { mint?: string; amount?: string; source?: string; destination?: string; authority?: string; tokenAmount?: { amount?: string } } };
     if (parsed.type !== "transfer" && parsed.type !== "transferChecked") return false;
     const amount = parsed.info?.amount ?? parsed.info?.tokenAmount?.amount;
-    return parsed.info?.mint === expectedMint && amount === expectedAmount.toString();
+    return parsed.info?.mint === expectedMint && amount === expectedAmount.toString() && parsed.info?.authority === expectedAuthority && parsed.info?.destination === expectedDestination;
   });
   if (!matchingTransfer) throw new Error("Source Solana mint or amount does not match payment");
 
@@ -45,13 +57,17 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
     functionName: "transfer",
     args: [payment.payeeWallet as `0x${string}`, amount],
   });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash: destinationTxHash, confirmations: 1 });
+  if (receipt.status !== "success") throw new Error("Destination Arbitrum payment failed");
+  const gasFee = receipt.gasUsed * receipt.effectiveGasPrice;
 
   return prisma.payment.update({
     where: { id: paymentId },
     data: {
-      status: "DESTINATION_PAYMENT_SUBMITTED",
+      status: "DESTINATION_PAYMENT_CONFIRMED",
       txHash: destinationTxHash,
-      events: { create: { type: "DESTINATION_PAYMENT_SUBMITTED", chainId: payment.chainId, tokenAddress: payment.tokenAddress, tokenSymbol: payment.tokenSymbol, amountBaseUnits: payment.amountBaseUnits, data: { sourceSignature, destinationTxHash, network: "arbitrum-one" }, hash: destinationTxHash } },
+      gasUsedWei: receipt.gasUsed.toString(), effectiveGasPriceWei: receipt.effectiveGasPrice.toString(), gasFeeWei: gasFee.toString(), gasFeeEth: formatEther(gasFee),
+      events: { create: { type: "DESTINATION_PAYMENT_CONFIRMED", chainId: payment.chainId, tokenAddress: payment.tokenAddress, tokenSymbol: payment.tokenSymbol, amountBaseUnits: payment.amountBaseUnits, gasUsedWei: receipt.gasUsed.toString(), effectiveGasPriceWei: receipt.effectiveGasPrice.toString(), gasFeeWei: gasFee.toString(), gasFeeEth: formatEther(gasFee), data: { sourceSignature, destinationTxHash, network: "arbitrum-one", confirmed: true }, hash: destinationTxHash } },
     },
     include: { events: true },
   });
