@@ -9,6 +9,7 @@ import { solanaAgentKeypair } from "@/lib/solana";
 export async function settleFromSolana(paymentId: string, sourceSignature: string) {
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
   if (!payment) throw new Error("Payment not found");
+  if (payment.route !== "SOLANA_TO_ARBITRUM") throw new Error("Payment route does not use Solana settlement");
   if (payment.status !== "PAYMENT_AUTHORIZED") throw new Error("Payment must be authorized before settlement");
 
   const solana = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com", "confirmed");

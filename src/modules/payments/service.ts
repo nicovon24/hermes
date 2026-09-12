@@ -263,6 +263,7 @@ export async function preflightPayments(
 
 async function createPaymentIntents(
   prepared: Awaited<ReturnType<typeof preflightPayments>>,
+  route: "ARBITRUM_DIRECT" | "SOLANA_TO_ARBITRUM" = "ARBITRUM_DIRECT",
 ) {
   return serializableTransaction(
     async (tx) => {
@@ -303,6 +304,7 @@ async function createPaymentIntents(
               tokenAddress: ARGT_ADDRESS,
               tokenSymbol: ARGT_SYMBOL,
               amountBaseUnits: amount.toString(),
+              route,
               externalReference: `payment:${order.externalReference}`,
           },
           update: {},
@@ -550,6 +552,7 @@ export async function runAutomaticPaymentsForPurchaseRequest(
   purchaseRequestId: string,
   providedGateway?: PaymentGateway,
   observer?: () => Promise<void>,
+  route: "ARBITRUM_DIRECT" | "SOLANA_TO_ARBITRUM" = "ARBITRUM_DIRECT",
 ) {
   const onProgress = async () => { try { await observer?.(); } catch (error) { console.error("Payment progress observer failed", error); } };
   const plan = await loadPaymentPlan(purchaseRequestId);
@@ -576,7 +579,7 @@ export async function runAutomaticPaymentsForPurchaseRequest(
     );
     throw error;
   }
-  const intents = await createPaymentIntents(prepared);
+  const intents = await createPaymentIntents(prepared, route);
   await onProgress();
   const sequence = await runSequentially(intents, async ({ payment, order }) => {
     if (payment.status === PaymentStatus.PAYMENT_CONFIRMED) {
@@ -585,6 +588,7 @@ export async function runAutomaticPaymentsForPurchaseRequest(
     if (payment.status !== PaymentStatus.PAYMENT_AUTHORIZED) {
       throw new DomainError(`Payment ${payment.id} requires manual reconciliation`, "CONFLICT", 409);
     }
+    if (payment.route === "SOLANA_TO_ARBITRUM") return;
     await executePayment(payment, order, gateway, confirmations, onProgress);
   });
   if (sequence.failedIndex !== null) {
