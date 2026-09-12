@@ -1,95 +1,60 @@
 # Hermes
 
-Negociación automática entre agentes de compra y venta de insumos.
+Hermes es el protocolo **agent-to-agent** de comunicación y negociación para agentes comerciales autónomos.
 
-Un comercio le pide a su agente comprador que reponga stock. El agente abre 3
-negociaciones en paralelo con 3 agentes vendedores (cada uno con su propio
-contexto: stock, márgenes, objetivo de rotación). Compiten en precio, plazo de
-entrega, plazo de pago y flete — no solo precio. Al final se comparan las 3
-ofertas normalizadas y se recomienda una con justificación.
+## Hermes Payments
 
-## Problema
+Esta branch implementa la primera capa del protocolo: solicitud, autorización, envío y verificación de pagos en ARGt sobre Arbitrum One.
 
-Consolidación y validación de precios, y optimización del capital inmovilizado
-en stock para comercios. Hoy eso se hace por WhatsApp, con listas de precios
-desactualizadas, sin historial y sin ninguna métrica de si conviene comprar
-ahora o esperar.
+Backend: TypeScript + Next.js + Prisma + Supabase + viem.
 
-## Estado del proyecto
-
-**Scaffolding inicial.** La UI y los requerimientos de cada vista todavía se
-están definiendo — existe un modelo/mockup en HTML como referencia visual
-(layout, look and feel), pero qué contiene cada vista (componentes exactos,
-datos, interacciones) se va a ir precisando a lo largo del desarrollo. No
-tomar lo que hay hoy como spec funcional cerrada.
-
-## Stack
-
-| Capa                       | Elección                                                          |
-| -------------------------- | ----------------------------------------------------------------- |
-| Frontend                   | Next.js 15 (App Router), TypeScript, Tailwind, shadcn/ui          |
-| Estado servidor            | TanStack Query                                                    |
-| Forms                      | React Hook Form + Zod                                             |
-| Backend                    | Server Actions (dentro del mismo proyecto Next, sin API separada) |
-| Base de datos              | Prisma (aún sin modelos definidos)                                |
-| Gráficos                   | recharts                                                          |
-| Git hooks                  | Husky + lint-staged                                               |
-| CI                         | GitHub Actions                                                    |
-
-## Enfoque de datos: mock primero, API real después
-
-Todo el desarrollo arranca con datos mockeados en `lib/mock-data.ts`. Las
-server actions de `actions/` devuelven ese mock al principio, con la misma
-forma que después va a tener la respuesta real. Cuando el protocolo de
-negociación y la lógica de agentes estén listos, se reemplaza el contenido de
-la action (mock → Prisma según corresponda) sin tocar `features/` ni
-`components/`.
-
-## Estructura
-
-```
-hermes/
-├── src/
-│   ├── app/            # rutas — Negotiation, Negotiations (historial), Dashboard, Settings
-│   ├── components/     # presentación, por dominio
-│   ├── features/       # hooks + lógica por dominio
-│   ├── actions/        # server actions ("use server")
-│   ├── lib/            # mock-data, utils
-│   └── types/          # tipos del protocolo (a definir)
-├── prisma/
-│   └── schema.prisma   # datasource + generator, sin modelos todavía
-├── .github/workflows/
-│   └── ci.yml
-└── README.md
+```text
+POST /api/payments
+  → POST /api/payments/{id}/authorize
+  → POST /api/payments/{id}/execute
+  → POST /api/payments/{id}/verify
 ```
 
-Nota de nombres: la vista principal se llama **Negotiation** (no "chat") — es
-la conversación con el agente comprador que dispara las negociaciones en
-paralelo. Es distinta de `negotiations/` (historial y detalle de negociaciones
-pasadas) y de `negotiation-settings/` (tab de settings).
-
-## Arranque rápido
+Para ejecución agent-to-agent autónoma, configurar una wallet exclusiva del agente:
 
 ```bash
-pnpm install
-pnpm dev        # http://localhost:3000
+export AGENT_PRIVATE_KEY=0x...
+export MAX_PAYMENT_BASE_UNITS=30000000000000000000000
 ```
 
-El proyecto arranca contra datos mockeados (`NEXT_PUBLIC_USE_MOCKS=true`): no
-necesita Postgres levantado para desarrollarse.
+Luego usar `POST /payments/{id}/execute`. El endpoint valida la wallet, respeta el límite de gasto, firma una transferencia de ARGt y devuelve el `tx_hash`. Nunca commitear `AGENT_PRIVATE_KEY`.
 
-## Flujo de trabajo
+### Ejecutar localmente
 
-Ramas base `frontend` y `backend`, colgando de `main`; de ahí pueden salir
-ramas puntuales por feature. Nunca se commitea directo a `main`. Ver
-[CONTRIBUTING.md](./CONTRIBUTING.md) para el detalle y
-[WORKFLOW.md](./WORKFLOW.md) para el orden de construcción de una feature.
+```bash
+npm install
+npx prisma generate
+npm run dev
+```
 
-## Documentación
+Aplicación: `http://localhost:3000`.
 
-| Doc                                  | Qué contiene                                                           |
-| ------------------------------------ | ---------------------------------------------------------------------- |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Flujo end-to-end y decisiones de stack |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) | Ramas, PRs, Husky, GitHub Actions, convenciones de código              |
-| [AGENTS.md](./AGENTS.md)             | Convenciones del repo para asistentes de código (Codex/Claude/Copilot) |
-| [WORKFLOW.md](./WORKFLOW.md)         | Orden concreto para construir una feature nueva                        |
+### Ejecutar con Docker
+
+No requiere instalar Python ni dependencias en la máquina:
+
+```bash
+docker compose up --build
+```
+
+Documentación interactiva: `http://localhost:8000/docs`.
+
+Para detener el container:
+
+```bash
+docker compose down
+```
+
+### Settlement
+
+```text
+Chain ID: 42161
+Token: ARGt
+Contract: 0x59863989d080B22476DB95656d0C3CC18be92214
+Decimals: 18
+```
