@@ -20,9 +20,20 @@ function NavIcon({ kind }: { kind: string }) {
 export function AppShell({ accounts, automaticPaymentsAvailable, children }: { accounts: Account[]; automaticPaymentsAvailable: boolean; children: ReactNode }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPreferenceReady, setSidebarPreferenceReady] = useState(false);
   const [automaticPayments, setAutomaticPayments] = useState(false);
   const [tourRequests, setTourRequests] = useState(0);
   const closeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    setSidebarCollapsed(window.localStorage.getItem("hermes-sidebar-collapsed") === "true");
+    setSidebarPreferenceReady(true);
+  }, []);
+  useEffect(() => {
+    if (sidebarPreferenceReady) {
+      window.localStorage.setItem("hermes-sidebar-collapsed", String(sidebarCollapsed));
+    }
+  }, [sidebarCollapsed, sidebarPreferenceReady]);
   useEffect(() => { if (menuOpen) closeButton.current?.focus(); }, [menuOpen]);
   const closeMenu = () => { setMenuOpen(false); document.getElementById("navigation-trigger")?.focus(); };
   const buyer = accounts.find((account) => account.kind === "BUYER");
@@ -49,7 +60,7 @@ export function AppShell({ accounts, automaticPaymentsAvailable, children }: { a
 
   if (pathname === "/") return <>{children}</>;
 
-  return <div className="app-shell">
+  return <div className={`app-shell ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>
     <a className="skip-link" href="#main-content">Ir al contenido</a>
     {menuOpen ? <button type="button" className="nav-backdrop" aria-label="Cerrar navegación" onClick={closeMenu} tabIndex={-1} /> : null}
     <aside id="app-navigation" className={`app-sidebar ${menuOpen ? "is-open" : ""}`} onKeyDown={(event) => {
@@ -70,7 +81,7 @@ export function AppShell({ accounts, automaticPaymentsAvailable, children }: { a
       <div className="sidebar-foot"><HermesMark /><strong>Las mejores condiciones,<br />a una conversación.</strong><button type="button" className="tour-launch" onClick={() => { setMenuOpen(false); setTourRequests((value) => value + 1); }}><span aria-hidden="true">?</span>Ver tutorial</button><span>Entorno de demostración</span></div>
     </aside>
     <div className="app-main">
-<header className="app-topbar"><button type="button" id="navigation-trigger" aria-controls="app-navigation" className="icon-button mobile-menu" aria-expanded={menuOpen} aria-label="Abrir navegación" onClick={() => setMenuOpen((value) => !value)}>☰</button><div className="breadcrumb">Tu espacio <span>/</span><strong>{activeLabel}</strong></div><div className="topbar-tools"><button className={`payment-toggle ${automaticPayments ? "is-active" : ""}`} data-tour="autopay" type="button" role="switch" aria-checked={automaticPayments} aria-label={automaticPaymentsAvailable ? `Auto pay ${automaticPayments ? "activado" : "desactivado"}` : "Auto pay no configurado"} disabled={!automaticPaymentsAvailable} onClick={toggleAutomaticPayments} title={automaticPaymentsAvailable ? "Activar o desactivar pagos automáticos" : "Configurá las variables privadas de pago para habilitarlo"}><span className="payment-toggle-symbol" aria-hidden="true">$</span><span>Auto pay</span><span className="payment-toggle-track" aria-hidden="true"><span /></span></button><button className="theme-toggle" type="button" onClick={toggleTheme} aria-label="Cambiar entre modo claro y oscuro"><svg className="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z" /></svg><svg className="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="3.5" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg></button><div className="account-identity"><strong>{current?.legalName ?? "Hermes"}</strong><span>{current?.kind === "SUPPLIER" ? "PROVEEDOR" : "COMERCIO"}</span></div><span className="account-avatar">{initials}</span></div></header>
+<header className="app-topbar"><button type="button" id="navigation-trigger" aria-controls="app-navigation" className="icon-button mobile-menu" aria-expanded={menuOpen} aria-label="Abrir navegación" onClick={() => setMenuOpen((value) => !value)}>☰</button><button type="button" className="icon-button sidebar-toggle" aria-pressed={sidebarCollapsed} aria-label={sidebarCollapsed ? "Mostrar barra lateral" : "Ocultar barra lateral"} title={sidebarCollapsed ? "Mostrar barra lateral" : "Ocultar barra lateral"} onClick={() => setSidebarCollapsed((value) => !value)}><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round"><rect x="3.25" y="4" width="17.5" height="16" rx="3" /><path d="M9.25 4v16" /><path className="sidebar-toggle-arrow" d={sidebarCollapsed ? "m13.5 9 3 3-3 3" : "m16.5 9-3 3 3 3"} /></svg></button><div className="breadcrumb">Tu espacio <span>/</span><strong>{activeLabel}</strong></div><div className="topbar-tools"><button className={`payment-toggle ${automaticPayments ? "is-active" : ""}`} data-tour="autopay" type="button" role="switch" aria-checked={automaticPayments} aria-label={automaticPaymentsAvailable ? `Auto pay ${automaticPayments ? "activado" : "desactivado"}` : "Auto pay no configurado"} disabled={!automaticPaymentsAvailable} onClick={toggleAutomaticPayments} title={automaticPaymentsAvailable ? "Activar o desactivar pagos automáticos" : "Configurá las variables privadas de pago para habilitarlo"}><span className="payment-toggle-symbol" aria-hidden="true">$</span><span>Auto pay</span><span className="payment-toggle-track" aria-hidden="true"><span /></span></button><button className="theme-toggle" type="button" onClick={toggleTheme} aria-label="Cambiar entre modo claro y oscuro"><svg className="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z" /></svg><svg className="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="3.5" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" /></svg></button><div className="account-identity"><strong>{current?.legalName ?? "Hermes"}</strong><span>{current?.kind === "SUPPLIER" ? "PROVEEDOR" : "COMERCIO"}</span></div><span className="account-avatar">{initials}</span></div></header>
       <div id="main-content" className="app-content"><PurchaseFlowProvider automaticPayments={automaticPayments} paymentsAvailable={automaticPaymentsAvailable} stagePath={homePath}>{children}</PurchaseFlowProvider></div>
       <footer className="app-footer"><span>hermes</span><span>Tu negocio sigue. Nosotros conversamos.</span></footer>
     </div>
