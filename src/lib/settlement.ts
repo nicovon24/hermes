@@ -9,7 +9,9 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
   if (!payment) throw new Error("Payment not found");
   if (payment.route !== "SOLANA_TO_ARBITRUM") throw new Error("Payment route does not use Solana settlement");
-  if (payment.status !== "PAYMENT_AUTHORIZED") throw new Error("Payment must be authorized before settlement");
+  if (payment.status !== "PAYMENT_AUTHORIZED" && payment.status !== "SOURCE_PAYMENT_CONFIRMED") {
+    throw new Error("Payment must be authorized before settlement");
+  }
 
   const solana = new Connection(process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com", "confirmed");
   const status = (await solana.getSignatureStatuses([sourceSignature], { searchTransactionHistory: true })).value[0];
@@ -43,8 +45,9 @@ export async function settleFromSolana(paymentId: string, sourceSignature: strin
   if (!matchingTransfer) throw new Error("Source Solana mint or amount does not match payment");
   const transferInstruction = transaction.transaction.message.instructions.find((instruction) => {
     if (!("parsed" in instruction) || !instruction.parsed || typeof instruction.parsed !== "object") return false;
-    const parsed = instruction.parsed as { type?: string; info?: { destination?: string } };
-    return (parsed.type === "transfer" || parsed.type === "transferChecked") && !!parsed.info?.destination;
+    const parsed = instruction.parsed as { type?: string; info?: { destination?: string; mint?: string; amount?: string; tokenAmount?: { amount?: string } } };
+    const amount = parsed.info?.amount ?? parsed.info?.tokenAmount?.amount;
+    return (parsed.type === "transfer" || parsed.type === "transferChecked") && parsed.info?.mint === expectedMint && amount === expectedAmount.toString() && !!parsed.info?.destination;
   });
   const destination = (transferInstruction as { parsed?: { info?: { destination?: string } } })?.parsed?.info?.destination;
   if (!destination) throw new Error("Source Solana destination is missing");
